@@ -1,22 +1,33 @@
 {
   "name": "zbundle",
-  "version": "0.3.0",
+  "version": "0.1.0",
   "description": "Bundler JavaScript/TypeScript écrit en Zig, sur zcompiler — scope hoisting, un seul fichier",
-  "keywords": ["bundler", "zig", "javascript", "typescript", "esm", "module-graph"],
+  "keywords": [
+    "bundler",
+    "zig",
+    "javascript",
+    "typescript",
+    "esm",
+    "module-graph"
+  ],
   "main": "index.js",
   "types": "index.d.ts",
   "files": [
+    "dist",
     "index.js",
     "index.d.ts",
     "bindings.js",
     "native",
     "build.zig",
-    "build.zig.zon"
+    "build.zig.zon",
+    "scripts"
   ],
   "scripts": {
-    "build": "zignapi build",
+    "build": "zignapi build && tsc",
+    "build:zig": "zignapi build",
+    "build:ts": "tsc",
     "test": "node --test",
-    "prepublishOnly": "zignapi build"
+    "prepublishOnly": "zignapi build && tsc"
   },
   "zignapi": {
     "binaryName": "zbundle",
@@ -33,5 +44,16 @@
   "devDependencies": {
     "zignapi": "file:../../../zignapi/packages/zignapi"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "bin": {
+    "zbundle": "dist/cli.js"
+  },
+  "optionalDependencies": {
+    "@zbundle/binding-darwin-arm64": "0.1.0",
+    "@zbundle/binding-darwin-x64": "0.1.0",
+    "@zbundle/binding-linux-arm64-gnu": "0.1.0",
+    "@zbundle/binding-linux-x64-gnu": "0.1.0",
+    "@zbundle/binding-linux-x64-musl": "0.1.0",
+    "@zbundle/binding-win32-x64-msvc": "0.1.0"
+  }
 }

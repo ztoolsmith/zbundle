@@ -1,0 +1,207 @@
+name: Release
+
+# Déclenché quand tu PUBLIES un release GitHub (tag v*, ex. v0.1.0). Le job
+# principal (ci.yml) sert de gate : tout vert ou rien. Ensuite on collecte les
+# binaires des 6 triples (Linux cross-compile les 5 non-Windows ; Windows
+# fournit le .node MSVC), on assemble les paquets, on rejoue la prod simulée,
+# puis on ATTACHE les tarballs au release ET on PUBLIE sur npm.
+#
+# Prérequis : un secret `NPM_TOKEN` (npm → Access Tokens, type "Automation")
+# dans Settings → Secrets and variables → Actions du repo.
+
+on:
+  release:
+    types: [published]
+  # Déclenchement manuel de secours (si l'event `release` n'a pas tiré) :
+  # Actions → Release → Run workflow, ou `gh workflow run release.yml -f tag=v0.1.0`.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag du release à (re)publier — ex. v0.1.0 (le release doit exister)"
+        required: true
+
+env:
+  ZIG_VERSION: 0.16.0
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  # Tout le job principal (tests + juge + prod simulée) en préalable.
+  gate:
+    uses: ./.github/workflows/ci.yml
+
+  # Linux : les 5 triples darwin/linux + les JS générés (loader + CLI compilé).
+  linux-artifacts:
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: zbundle }
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/zignapi
+          path: zignapi
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/zcompiler
+          path: zcompiler
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.8.0
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm, cache-dependency-path: zbundle/pnpm-lock.yaml }
+
+      - name: Build zignapi (CLI + module)
+        working-directory: zignapi
+        run: pnpm install --frozen-lockfile=false && pnpm --filter zignapi build
+      - name: Install zcompiler (module Zig)
+        working-directory: zcompiler
+        run: pnpm install --frozen-lockfile=false
+      - name: Install zbundle
+        working-directory: zbundle
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Cross-compile darwin+linux + génère les JS et le CLI
+        working-directory: zbundle/packages/zbundle
+        run: |
+          pnpm build                              # natif hôte + loader + tsc (dist/cli.js)
+          pnpm exec zignapi build --all || true   # les 5 triples cross (win32 échoue ici)
+          tar czf /tmp/linux.tgz \
+            npm/darwin-arm64 npm/darwin-x64 npm/linux-x64-gnu npm/linux-x64-musl npm/linux-arm64-gnu \
+            index.js bindings.js index.d.ts dist
+
+      - name: Upload artefacts Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: /tmp/linux.tgz
+
+  # Windows : le seul binaire que Zig ne cross-compile pas depuis Linux (libc MSVC).
+  windows-artifacts:
+    needs: gate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: zbundle }
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/zignapi
+          path: zignapi
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/zcompiler
+          path: zcompiler
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.8.0
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      - name: Build zignapi
+        working-directory: zignapi
+        run: pnpm install --frozen-lockfile=false && pnpm --filter zignapi build
+      - name: Install zcompiler
+        working-directory: zcompiler
+        run: pnpm install --frozen-lockfile=false
+      - name: Install zbundle
+        working-directory: zbundle
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Build + package win32-x64-msvc
+        working-directory: zbundle/packages/zbundle
+        run: |
+          pnpm exec zignapi build --target win32-x64-msvc
+          tar czf win32.tgz npm/win32-x64-msvc
+
+      - name: Upload artefact Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: win32
+          path: zbundle/packages/zbundle/win32.tgz
+
+  # Assemblage : tous les binaires réunis → prepublish → prod simulée → attache
+  # au release + publie sur npm.
+  assemble:
+    needs: [linux-artifacts, windows-artifacts]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # `gh release upload`
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: zbundle }
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/zignapi
+          path: zignapi
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.8.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: zbundle/pnpm-lock.yaml
+          registry-url: "https://registry.npmjs.org" # écrit le .npmrc pour npm publish
+
+      # Ici on n'a besoin QUE du CLI de zignapi (tsc), pas de Zig : les binaires
+      # arrivent tout construits par les deux jobs précédents.
+      - name: Build zignapi (CLI seul)
+        working-directory: zignapi
+        run: pnpm install --frozen-lockfile=false && pnpm --filter zignapi build:ts
+      - name: Install zbundle
+        working-directory: zbundle
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Récupère les artefacts (Linux + Windows)
+        uses: actions/download-artifact@v4
+        with: { path: /tmp/artifacts }
+
+      - name: Déballe tous les binaires dans le package
+        working-directory: zbundle/packages/zbundle
+        run: |
+          tar xzf /tmp/artifacts/linux/linux.tgz -C .
+          tar xzf /tmp/artifacts/win32/win32.tgz -C .
+          ls npm/
+
+      - name: prepublish (assemble npm/<triple>/ + optionalDependencies)
+        working-directory: zbundle/packages/zbundle
+        run: pnpm exec zignapi prepublish
+
+      # Le paquet PUBLIÉ démarre-t-il ? L'API et la commande, depuis un témoin vide.
+      - name: Prod simulée
+        working-directory: zbundle/packages/zbundle
+        run: node scripts/prod-witness.mjs
+
+      - name: npm pack (principal + plateformes)
+        working-directory: zbundle/packages/zbundle
+        run: |
+          mkdir -p /tmp/out
+          npm pack --pack-destination /tmp/out
+          for d in npm/*/; do (cd "$d" && npm pack --pack-destination /tmp/out); done
+          ls -la /tmp/out
+
+      - name: Upload des tarballs (artefact du workflow)
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarballs
+          path: /tmp/out/*.tgz
+
+      - name: Attache les tarballs au release GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" /tmp/out/*.tgz --clobber --repo "${{ github.repository }}"
+
+      - name: Publie sur npm (plateformes d'abord, principal en dernier)
+        working-directory: /tmp/out
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # Les paquets de plateforme d'abord : sinon les optionalDependencies du
+          # principal pointent dans le vide pendant quelques secondes.
+          # --access public : requis pour les scopés (@zbundle/*).
+          for t in *binding*.tgz; do npm publish "$t" --access public; done
+          # Puis le principal (le seul tarball sans "binding" dans le nom).
+          for t in *.tgz; do case "$t" in *binding*) ;; *) npm publish "$t" --access public ;; esac; done

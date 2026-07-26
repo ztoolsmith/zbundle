@@ -46,9 +46,24 @@ const ModuleId = graph.ModuleId;
 pub const Error = error{ BundleFailed, OutOfMemory };
 pub const BundleError = struct { message: []const u8 = "" };
 
+/// Le format du fichier produit.
+pub const Format = enum {
+    /// Module ES : les externals restent des `import` en tête, les exports de
+    /// l'entry sortent en `export { … }`. Le défaut, et le seul qui compose.
+    esm,
+    /// Une IIFE : tout est enfermé dans `(() => { … })()`, rien ne fuit dans le
+    /// scope global. C'est le format d'un `<script>` ou d'un binaire autonome.
+    /// **Exige zéro external** : un `import` est illégal dans une fonction.
+    iife,
+};
+
+pub const Options = struct { format: Format = .esm };
+
 pub const Stats = struct {
     /// Modules effectivement ÉMIS (après shaking).
     modules: u32,
+    /// Nombre d'exports de l'entry (0 en `iife` : une IIFE n'exporte rien).
+    entry_exports: u32,
     /// Modules du graphe dont plus rien n'a survécu.
     modules_dropped: u32,
     externals: u32,
@@ -135,6 +150,8 @@ const Linker = struct {
     /// Statistiques de shaking.
     units_total: u32 = 0,
     units_alive: u32 = 0,
+    opts: Options = .{},
+    entry_exports: u32 = 0,
 
     fn fail(self: *Linker, comptime fmt: []const u8, args: anytype) Error {
         self.err.message = std.fmt.allocPrint(self.a, fmt, args) catch "bundle failed";
@@ -758,11 +775,29 @@ const Linker = struct {
     // ---- 5. l'émission ----
 
     fn emit(self: *Linker, out: *std.ArrayList(u8)) Error!void {
-        try out.appendSlice(self.a, "// Genere par zbundle — format ESM, un seul fichier.\n");
+        const iife = self.opts.format == .iife;
+        try out.appendSlice(self.a, if (iife)
+            "// Genere par zbundle — IIFE, un seul fichier.\n"
+        else
+            "// Genere par zbundle — format ESM, un seul fichier.\n");
+
+        // Une IIFE ne peut PAS porter d'`import` : un module externe n'a nulle
+        // part où aller. On le dit, plutôt que d'émettre du JS invalide.
+        if (iife and self.externals.items.len > 0) {
+            return self.fail(
+                "--format iife est incompatible avec des imports externes ({d})\n" ++
+                    "  Le premier : '{s}'. Une IIFE enferme tout dans une fonction, or un\n" ++
+                    "  `import` n'est legal qu'au top-level d'un module.\n" ++
+                    "  Utilisez --format esm, ou rendez ces dependances internes.",
+                .{ self.externals.items.len, self.externals.items[0].specifier },
+            );
+        }
 
         // Les externals EN TÊTE, dédupliqués et fusionnés.
         for (self.externals.items) |ext| try self.emitExternalImport(ext, out);
         if (self.externals.items.len > 0) try out.append(self.a, '\n');
+
+        if (iife) try out.appendSlice(self.a, "(() => {\n");
 
         for (self.order.items) |id| {
             const m = &self.mods[id];
@@ -779,7 +814,21 @@ const Linker = struct {
             try out.append(self.a, '\n');
         }
 
-        try self.emitEntryExports(out);
+        if (iife) {
+            // Une IIFE n'exporte rien : on compte quand même ce qu'on perd, pour
+            // que l'appelant puisse le signaler.
+            self.entry_exports = try self.countEntryExports();
+            try out.appendSlice(self.a, "})();\n");
+            return;
+        }
+        self.entry_exports = try self.emitEntryExports(out);
+    }
+
+    fn countEntryExports(self: *Linker) Error!u32 {
+        var pairs: std.ArrayList(NamePair) = .empty;
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        try self.collectExports(self.g.entry, &pairs, &seen, 0);
+        return @intCast(pairs.items.len);
     }
 
     fn emitExternalImport(self: *Linker, ext: ExternalImport, out: *std.ArrayList(u8)) Error!void {
@@ -890,11 +939,11 @@ const Linker = struct {
     }
 
     /// Les exports de l'ENTRY : les seuls survivants du bundle.
-    fn emitEntryExports(self: *Linker, out: *std.ArrayList(u8)) Error!void {
+    fn emitEntryExports(self: *Linker, out: *std.ArrayList(u8)) Error!u32 {
         var pairs: std.ArrayList(NamePair) = .empty;
         var seen: std.StringHashMapUnmanaged(void) = .empty;
         try self.collectExports(self.g.entry, &pairs, &seen, 0);
-        if (pairs.items.len == 0) return;
+        if (pairs.items.len == 0) return 0;
         std.mem.sort(NamePair, pairs.items, {}, byExported);
 
         try out.appendSlice(self.a, "export {");
@@ -907,6 +956,7 @@ const Linker = struct {
             }
         }
         try out.appendSlice(self.a, " };\n");
+        return @intCast(pairs.items.len);
     }
 
     // ---- utilitaires ----
@@ -1029,12 +1079,13 @@ const RESERVED = [_][]const u8{
 
 /// Bundle `entry` en UN fichier de JS exécutable (format ESM).
 pub fn bundle(a: Allocator, io: Io, entry: []const u8, err: *BundleError) Error!Bundle {
-    const r = try bundleReport(a, io, entry, err, false);
+    const r = try bundleReport(a, io, entry, err, false, .{});
     return .{ .code = r.code, .stats = r.stats };
 }
 
-/// Idem, mais collecte aussi ce que le tree-shaking a éliminé (si `with_dead`).
-pub fn bundleReport(a: Allocator, io: Io, entry: []const u8, err: *BundleError, with_dead: bool) Error!Report {
+/// Idem, mais collecte aussi ce que le tree-shaking a éliminé (si `with_dead`),
+/// et accepte les options (le format de sortie).
+pub fn bundleReport(a: Allocator, io: Io, entry: []const u8, err: *BundleError, with_dead: bool, opts: Options) Error!Report {
     const t0 = Io.Clock.awake.now(io).nanoseconds;
 
     var gerr: graph.BuildError = .{};
@@ -1064,7 +1115,7 @@ pub fn bundleReport(a: Allocator, io: Io, entry: []const u8, err: *BundleError, 
         input_bytes += @intCast(p.source.len);
     }
 
-    var l = Linker{ .a = a, .err = err, .g = built.graph, .mods = mods };
+    var l = Linker{ .a = a, .err = err, .g = built.graph, .mods = mods, .opts = opts };
     try l.computeOrder();
     try l.check();
     // MARK avant tout nommage : un binding mort ne doit pas consommer un nom
@@ -1128,6 +1179,7 @@ pub fn bundleReport(a: Allocator, io: Io, entry: []const u8, err: *BundleError, 
         .dead = dead.items,
         .stats = .{
             .modules = emitted_mods,
+            .entry_exports = l.entry_exports,
             .modules_dropped = @intCast(mods.len - emitted_mods),
             .externals = @intCast(l.externals.items.len),
             .renamed = l.renamed,
@@ -1545,10 +1597,145 @@ test "shaking : le rapport dit CE QUI est mort et POURQUOI" {
     try s.write("main.js", "import { kept } from './lib.js'; console.log(kept);");
     var err: BundleError = .{};
     const full = try std.fs.path.join(s.a(), &.{ s.root, "main.js" });
-    const r = try bundleReport(s.a(), Sandbox.io, full, &err, true);
+    const r = try bundleReport(s.a(), Sandbox.io, full, &err, true, .{});
     try std.testing.expectEqual(@as(usize, 1), r.dead.len);
     try std.testing.expect(std.mem.endsWith(u8, r.dead[0].module, "lib.js"));
     try std.testing.expectEqual(@as(u32, 2), r.dead[0].line);
     try std.testing.expect(indexOf(r.dead[0].snippet, "dropped") != null);
     try std.testing.expect(indexOf(r.dead[0].reason, "aucune reference vivante") != null);
+}
+
+test "format iife : tout enferme dans une fonction, rien n'exporte" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("lib.js", "export const greet = () => 'salut';");
+    try s.write("main.js", "import { greet } from './lib.js'; console.log(greet()); export const x = 1;");
+    var err: BundleError = .{};
+    const full = try std.fs.path.join(s.a(), &.{ s.root, "main.js" });
+    const r = try bundleReport(s.a(), Sandbox.io, full, &err, false, .{ .format = .iife });
+    try std.testing.expect(indexOf(r.code, "(() => {") != null);
+    try std.testing.expect(std.mem.endsWith(u8, r.code, "})();\n"));
+    // Une IIFE n'exporte rien — mais on COMPTE ce qu'on perd, pour le signaler.
+    try std.testing.expect(indexOf(r.code, "export {") == null);
+    try std.testing.expectEqual(@as(u32, 1), r.stats.entry_exports);
+}
+
+test "format iife : refus clair si le bundle a des externals" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("main.js", "import { join } from 'node:path'; console.log(join('a', 'b'));");
+    var err: BundleError = .{};
+    const full = try std.fs.path.join(s.a(), &.{ s.root, "main.js" });
+    try std.testing.expectError(
+        error.BundleFailed,
+        bundleReport(s.a(), Sandbox.io, full, &err, false, .{ .format = .iife }),
+    );
+    try std.testing.expect(indexOf(err.message, "incompatible avec des imports externes") != null);
+    try std.testing.expect(indexOf(err.message, "--format esm") != null); // dit quoi faire
+}
+
+test "format esm reste le defaut, inchange" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("main.js", "export const x = 1;");
+    const code = try s.bundleOf("main.js");
+    try std.testing.expect(indexOf(code, "(() => {") == null);
+    try std.testing.expect(indexOf(code, "export { x };") != null);
+}
+
+// ---- les racines-export de l'entry : LES QUATRE FORMES ----
+// Ces tests ne corrigent aucun bug (les quatre formes marchaient) : ils
+// VERROUILLENT le cas limite « exporte + zero reference interne », qui est
+// exactement celui qu'un marquage naif (iterer les references au lieu des
+// exports) casserait sans que rien d'autre ne s'en apercoive.
+
+test "racine-export : export <declaration> inline, zero reference" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("main.js", "export function jamaisUtilisee(x) { return x; }\nconsole.log('ok');");
+    const code = try s.bundleOf("main.js");
+    try std.testing.expect(indexOf(code, "function jamaisUtilisee") != null);
+    try std.testing.expect(indexOf(code, "export { jamaisUtilisee };") != null);
+}
+
+test "racine-export : export { a, b as c } (specifiers), zero reference" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("main.js",
+        \\function a() { return 1; }
+        \\function b() { return 2; }
+        \\export { a, b as renomme };
+        \\console.log('ok');
+    );
+    const code = try s.bundleOf("main.js");
+    try std.testing.expect(indexOf(code, "function a()") != null);
+    try std.testing.expect(indexOf(code, "function b()") != null);
+    try std.testing.expect(indexOf(code, "export { a, b as renomme };") != null);
+}
+
+test "racine-export : export default (expression ET binding)" {
+    {
+        var s = try Sandbox.init(std.testing.allocator);
+        defer s.deinit();
+        try s.write("main.js", "export default function () { return 1; }\nconsole.log('ok');");
+        const code = try s.bundleOf("main.js");
+        try std.testing.expect(indexOf(code, "_default = function") != null);
+        try std.testing.expect(indexOf(code, "as default };") != null);
+    }
+    {
+        var s = try Sandbox.init(std.testing.allocator);
+        defer s.deinit();
+        try s.write("main.js", "const val = 42;\nexport default val;\nconsole.log('ok');");
+        const code = try s.bundleOf("main.js");
+        try std.testing.expect(indexOf(code, "const val = 42") != null);
+        try std.testing.expect(indexOf(code, "export { val as default };") != null);
+    }
+}
+
+test "racine-export : re-export — la racine est dans le module CIBLE" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("dep.js", "export const cible = 1; export const inutile = 2;");
+    try s.write("main.js", "export { cible } from './dep.js';\nconsole.log('ok');");
+    const code = try s.bundleOf("main.js");
+    // Le binding vit dans dep.js : c'est LUI que la racine doit atteindre.
+    try std.testing.expect(indexOf(code, "const cible = 1") != null);
+    try std.testing.expect(indexOf(code, "export { cible };") != null);
+    // …sans tirer le reste du module cible.
+    try std.testing.expect(indexOf(code, "inutile") == null);
+}
+
+test "racine-export : export * et export * as ns" {
+    {
+        var s = try Sandbox.init(std.testing.allocator);
+        defer s.deinit();
+        try s.write("dep.js", "export const viaStar = 1;");
+        try s.write("main.js", "export * from './dep.js';\nconsole.log('ok');");
+        const code = try s.bundleOf("main.js");
+        try std.testing.expect(indexOf(code, "const viaStar = 1") != null);
+        try std.testing.expect(indexOf(code, "export { viaStar };") != null);
+    }
+    {
+        var s = try Sandbox.init(std.testing.allocator);
+        defer s.deinit();
+        try s.write("dep.js", "export const a = 1; export const b = 2;");
+        try s.write("main.js", "export * as ns from './dep.js';\nconsole.log('ok');");
+        const code = try s.bundleOf("main.js");
+        // Le namespace est materialise, et exporte sous son nom public.
+        try std.testing.expect(indexOf(code, "const dep_ns = {") != null);
+        try std.testing.expect(indexOf(code, "as ns };") != null);
+    }
+}
+
+test "racine-export : exporte survit, jumeau NON exporte meurt (pas de sur-marquage)" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("main.js",
+        \\export function publique(x) { return x; }
+        \\function privee(x) { return x; }
+        \\console.log('ok');
+    );
+    const code = try s.bundleOf("main.js");
+    try std.testing.expect(indexOf(code, "function publique") != null);
+    try std.testing.expect(indexOf(code, "privee") == null);
 }

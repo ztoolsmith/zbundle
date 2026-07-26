@@ -154,6 +154,12 @@ function checkProject(dir) {
   const shaking = checkShaking(dir, entry, code);
   if (shaking) return record(name, shaking.what, shaking.detail);
 
+  // LE TEMOIN-IMPORTEUR : les exports sont un CONTRAT, ils se testent comme tel.
+  // Exécuter le bundle comme un script ne touche JAMAIS son `export { … }` —
+  // c'est le trou par lequel une régression d'export passerait inaperçue.
+  const exports = checkExports(dir, entry, bundleFile);
+  if (exports) return record(name, exports.what, exports.detail);
+
   if (!keep) fs.rmSync(bundleFile, { force: true });
   fs.rmSync(path.join(dir, ".reference"), { recursive: true, force: true });
   pass++;
@@ -167,6 +173,84 @@ function checkProject(dir) {
       `${stats.externals} ext  ${String(stats.renamed).padStart(2)} renommés  ` +
       `${shaken}${stats.input_bytes}→${stats.output_bytes} o (${pct} %)  ${DIM}${stats.bundle_ms.toFixed(2)} ms${OFF}`,
   );
+}
+
+/**
+ * LE TÉMOIN-IMPORTEUR. Pour un projet qui déclare `// expect-exports:`, on
+ * génère un module qui **importe le bundle** et vérifie son contrat :
+ *
+ *   // expect-exports: jamaisUtilisee:function VERSION:string
+ *   // expect-call: jamaisUtilisee(42) -> inutile 42
+ *
+ * `Object.keys` + `typeof` de chaque export, puis appel réel de ceux qu'un
+ * `expect-call` désigne. Sans ça, `export { … }` n'est jamais exercé : le
+ * harnais exécute le bundle comme un SCRIPT, et un script ignore ses exports.
+ */
+function checkExports(dir, entry, bundleFile) {
+  const head = fs.readFileSync(entry, "utf8");
+  const wanted = (head.match(/\/\/\s*expect-exports:\s*(.+)/) ?? [])[1];
+  if (!wanted) return null;
+
+  const specs = wanted.trim().split(/\s+/).map((s) => {
+    const [name, type = "function"] = s.split(":");
+    return { name, type };
+  });
+  const calls = [...head.matchAll(/\/\/\s*expect-call:\s*(.+?)\s*->\s*(.+)/g)].map((m) => ({
+    expr: m[1].trim(),
+    expected: m[2].trim(),
+  }));
+
+  const witness = path.join(dir, ".witness.mjs");
+  fs.writeFileSync(
+    witness,
+    `import * as bundle from ${JSON.stringify("./" + path.basename(bundleFile))};
+` +
+      `const problems = [];
+` +
+      `const keys = Object.keys(bundle);
+` +
+      `for (const { name, type } of ${JSON.stringify(specs)}) {
+` +
+      `  if (!keys.includes(name)) { problems.push(\`export MANQUANT : \${name} (presents : \${keys.join(", ") || "aucun"})\`); continue; }
+` +
+      `  const actual = typeof bundle[name];
+` +
+      `  if (actual !== type) problems.push(\`\${name} : typeof \${actual}, attendu \${type}\`);
+` +
+      `}
+` +
+      `for (const { expr, expected } of ${JSON.stringify(calls)}) {
+` +
+      `  const m = expr.match(/^(\\w+)\\((.*)\\)$/);
+` +
+      `  if (!m) { problems.push(\`expect-call illisible : \${expr}\`); continue; }
+` +
+      `  const fn = bundle[m[1]];
+` +
+      `  if (typeof fn !== "function") { problems.push(\`\${m[1]} n'est pas appelable\`); continue; }
+` +
+      `  const args = m[2].trim() ? JSON.parse("[" + m[2] + "]") : [];
+` +
+      `  let got;
+` +
+      `  try { got = String(fn(...args)); } catch (e) { problems.push(\`\${expr} a leve : \${e.message}\`); continue; }
+` +
+      `  if (got !== expected) problems.push(\`\${expr} -> \${JSON.stringify(got)}, attendu \${JSON.stringify(expected)}\`);
+` +
+      `}
+` +
+      `if (problems.length) { console.error(problems.join("\\n")); process.exit(1); }
+`,
+  );
+
+  try {
+    run(witness, dir);
+    return null;
+  } catch (err) {
+    return { what: "le CONTRAT d'export du bundle est casse", detail: (err.stderr || err.message).trim() };
+  } finally {
+    if (!keep) fs.rmSync(witness, { force: true });
+  }
 }
 
 /**

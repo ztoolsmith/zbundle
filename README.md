@@ -1,5 +1,7 @@
 # zbundle
 
+[![CI](https://github.com/ztoolsmith/zbundle/actions/workflows/ci.yml/badge.svg)](https://github.com/ztoolsmith/zbundle/actions/workflows/ci.yml)
+
 Un bundler JavaScript/TypeScript écrit en **Zig**, construit sur
 [zcompiler](../zcompiler) (le compilateur) et [zignapi](../zignapi) (le pont Node).
 
@@ -10,6 +12,16 @@ collisions résolues par renommage. Pas de wrappers de fonctions, pas de registr
 à l'exécution — du JS plat et lisible.
 
 > Importer 1 fonction d'un barrel de 20 : **24 modules / 4022 o → 3 modules / 260 o**.
+
+```bash
+zbundle src/index.tsx -o dist/bundle.js
+```
+```
+✔ dist/bundle.js  3 modules  0 externals  −80 statements, −21 modules
+  4022 → 260 octets (6 %) en 2.5 ms  esm
+```
+
+…ou depuis Node :
 
 ```js
 import zbundle from "zbundle";
@@ -55,11 +67,25 @@ d'origine** (`playground/run.mjs`) — le round-trip du bundler.
   **dans le doute, impur** : un bundle 5 % plus gros est un bug de moins.
 - **Refuser clairement** ce qu'il ne peut pas faire honnêtement (cf. plus bas).
 
+## La commande
+
+```
+zbundle <entry> [-o <fichier>]   bundler (les stats vont sur stderr)
+  -f, --format esm|iife          iife : tout dans une IIFE, exige zéro external
+      --dead                     lister ce que le tree-shaking a retiré
+      --graph                    le graphe de modules, sans bundler
+      --watch                    reconstruire à chaque changement (avec -o)
+      --quiet                    pas de statistiques
+```
+
+Un refus sort en **code 1** avec son explication, et **rien** sur stdout — un
+pipe ne reçoit jamais de JS invalide.
+
 ## Démarrer
 
 ```bash
 pnpm install
-pnpm build     # compile l'addon + génère index.js / index.d.ts
+pnpm build     # l'addon + le loader, puis le CLI (tsc)
 pnpm test      # node --test
 
 node playground/run.mjs                       # LE JUGE
@@ -86,9 +112,9 @@ naturellement : après fusion l'importeur référence la même variable.
 
 | | |
 |---|---|
-| tests Zig | 59 |
-| tests Node | 52 |
-| playground (le juge) | **18/18** — le bundle dit ce que dit l'original, et le code mort est absent |
+| tests Zig | 68 |
+| tests Node | 66 |
+| playground (le juge) | **20/20** — le bundle dit ce que dit l'original, et le code mort est absent |
 | fixtures de graphe | 12/12 |
 | projets-témoins | 3/3 |
 | monde réel | **lodash-es : 172 modules, 131 → 81 Ko, 30 ms**, résultats identiques |

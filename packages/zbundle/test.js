@@ -472,10 +472,10 @@ test("live binding importé NOMMÉMENT : accepté (le hoisting le gère)", () =>
   assert.match(code, /let count = 0/);
 });
 
-test("VERSION suit le package.json (0.2.0)", () => {
+test("VERSION suit le package.json — 1re version publiee", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.3.0");
+  assert.equal(zbundle.VERSION, "0.1.0");
 });
 
 // ══════════════════ v0.3 : LE TREE-SHAKING ══════════════════
@@ -564,5 +564,137 @@ test("non-régression : les projets v0.2 gardent leur comportement", () => {
 test("VERSION suit le package.json (0.3.0)", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.3.0");
+  assert.equal(zbundle.VERSION, "0.1.0");
+});
+
+// ══════════════════ LE CLI ══════════════════
+// On lance le VRAI binaire : c'est la seule façon de vérifier ce qui compte
+// pour un outil en ligne de commande — la séparation stdout/stderr, les codes
+// de sortie, et la lisibilité des refus.
+
+const { execFileSync, spawnSync } = require("node:child_process");
+const os = require("node:os");
+
+const CLI = path.join(__dirname, "dist", "cli.js");
+
+/** Lance le CLI et rend { status, stdout, stderr } sans jamais throw. */
+function cli(args, cwd) {
+  const r = spawnSync(process.execPath, [CLI, ...args], {
+    cwd: cwd ?? path.join(__dirname, "..", "..", "playground", "projects", "shake-barrel"),
+    encoding: "utf8",
+  });
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr.replace(/\x1b\[[0-9;]*m/g, "") };
+}
+
+test("CLI : --help et --version", () => {
+  const help = cli(["--help"]);
+  assert.equal(help.status, 0);
+  assert.match(help.stdout, /Usage:/);
+  assert.match(help.stdout, /--watch/);
+
+  const v = cli(["--version"]);
+  assert.equal(v.status, 0);
+  assert.equal(v.stdout.trim(), zbundle.VERSION);
+});
+
+test("CLI : sans argument, l'aide et un code d'erreur", () => {
+  const r = cli([]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /Usage:/);
+});
+
+test("CLI : le bundle va sur stdout, les stats sur stderr", () => {
+  const r = cli(["main.js"]);
+  assert.equal(r.status, 0);
+  // stdout est du JS PUR : redirigeable tel quel dans un fichier.
+  assert.match(r.stdout, /^\/\/ Genere par zbundle/);
+  assert.doesNotMatch(r.stdout, /modules/); // aucune statistique dedans
+  // Les chiffres sont sur stderr.
+  assert.match(r.stderr, /3 modules/);
+  assert.match(r.stderr, /octets/);
+});
+
+test("CLI : -o écrit le fichier et laisse stdout vide", () => {
+  const out = path.join(os.tmpdir(), `zbundle-cli-${process.pid}.js`);
+  try {
+    const r = cli(["main.js", "-o", out]);
+    assert.equal(r.status, 0);
+    assert.equal(r.stdout, "");
+    assert.ok(fs.existsSync(out));
+    assert.match(fs.readFileSync(out, "utf8"), /keptOne/);
+  } finally {
+    fs.rmSync(out, { force: true });
+  }
+});
+
+test("CLI : --quiet supprime les statistiques", () => {
+  const r = cli(["main.js", "--quiet"]);
+  assert.equal(r.status, 0);
+  assert.equal(r.stderr, "");
+  assert.ok(r.stdout.length > 0);
+});
+
+test("CLI : --graph affiche l'arbre au lieu de bundler", () => {
+  const r = cli(["main.js", "--graph"]);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /main\.js/);
+  assert.match(r.stdout, /modules,.*edges/);
+  assert.doesNotMatch(r.stdout, /Genere par zbundle/); // pas de bundle
+});
+
+test("CLI : --dead liste les éliminations avec leur raison", () => {
+  const r = cli(["main.js", "--dead", "--quiet"], path.join(__dirname, "..", "..", "playground", "projects", "shake-diamond"));
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /elimine par le tree-shaking/);
+  assert.match(r.stderr, /heavy\.js/);
+  assert.match(r.stderr, /module entierement elimine/);
+});
+
+test("CLI : --format iife enveloppe, et n'exporte rien", () => {
+  const r = cli(["main.js", "-f", "iife"]);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /\(\(\) => \{/);
+  assert.match(r.stdout, /\}\)\(\);\s*$/);
+  assert.doesNotMatch(r.stdout, /^export /m);
+});
+
+test("CLI : --format iife REFUSE clairement s'il y a des externals", () => {
+  const r = cli(["main.js", "-f", "iife"], path.join(__dirname, "..", "..", "playground", "projects", "external"));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /incompatible avec des imports externes/);
+  assert.match(r.stderr, /--format esm/); // dit quoi faire
+  assert.equal(r.stdout, ""); // rien d'invalide n'est sorti
+});
+
+test("CLI : un format inconnu est refusé", () => {
+  const r = cli(["main.js", "-f", "umd"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /format inconnu 'umd'/);
+  assert.match(r.stderr, /esm, iife/);
+});
+
+test("CLI : entry introuvable -> message court, code 1", () => {
+  const r = cli(["./nexiste-pas.js"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /entry introuvable/);
+});
+
+test("CLI : un refus du linker remonte tel quel, avec son explication", () => {
+  const r = cli(["main.js"], path.join(__dirname, "..", "..", "playground", "refusals", "top-level-await"));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /top-level await/);
+  assert.match(r.stderr, /Deplacez-le dans une/); // le conseil est préservé
+  assert.equal(r.stdout, "");
+});
+
+test("CLI : --watch exige -o (sinon le bundle part dans le terminal)", () => {
+  const r = cli(["main.js", "--watch"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /--watch demande -o/);
+});
+
+test("CLI : deux entries à la fois sont refusées", () => {
+  const r = cli(["main.js", "autre.js"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /une seule entry/);
 });

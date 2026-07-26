@@ -37,6 +37,21 @@ en-têtes optionnels dans le `main.*` :
 C'est indispensable : un stdout identique prouve que rien de **vivant** n'a été
 supprimé — il ne prouve pas que le **mort** a disparu.
 
+### Le témoin-importeur
+
+Exécuter le bundle comme un script **ignore ses `export`**. Un projet qui
+déclare des exports fait donc générer un module qui **importe le bundle** et
+vérifie son contrat :
+
+```js
+// expect-exports: jamaisUtilisee:function ns:object
+// expect-call: jamaisUtilisee(42) -> inutile 42
+```
+
+`Object.keys` + `typeof` de chaque nom, puis **appel réel** de ceux qu'un
+`expect-call` désigne (arguments en JSON). Les exports sont un contrat ; ils se
+testent comme tel — pas par effet de bord.
+
 Puis `refusals/` : chaque limite de la v0.2 **doit** produire une erreur, et une
 erreur qui explique (≥ 2 lignes). Un bundle silencieusement faux serait pire
 qu'un refus.
@@ -94,6 +109,8 @@ echo '// expect-error: ce que zbundle doit refuser' > refusals/mon-refus/main.js
 | `shake-class` | classe pure jamais instanciée (éliminée) vs champ statique impur (gardée) |
 | `shake-star` | `export *` partiellement consommé |
 | `shake-getter` | le piège : `obj.prop` peut être un getter, donc c'est conservé |
+| `export-unused` | le cas limite : **exporté + zéro référence** survit, son jumeau privé meurt |
+| `export-forms` | les **7 formes** d'export, toutes appelées à travers le bundle importé |
 
 | refus | la limite v0.2 |
 |---|---|

@@ -19,7 +19,7 @@ const Allocator = std.mem.Allocator;
 
 /// La version de zbundle (miroir du `package.json`). Une **constante de module**
 /// — zignapi enregistre les valeurs non-fonction telles quelles.
-pub const VERSION = "0.3.0";
+pub const VERSION = "0.1.0";
 
 /// L'`Io` d'un appel (Zig 0.16 : tout accès disque passe par cette interface).
 /// La variante mono-thread ne démarre aucun worker et n'alloue rien : c'est
@@ -102,7 +102,36 @@ fn bundleStats(a: Allocator, entry: []const u8) !linker.Bundle {
 fn bundleReport(a: Allocator, entry: []const u8) !linker.Report {
     var t: std.Io.Threaded = undefined;
     var err: linker.BundleError = .{};
-    return linker.bundleReport(a, blockingIo(&t), entry, &err, true) catch |e| switch (e) {
+    return linker.bundleReport(a, blockingIo(&t), entry, &err, true, .{}) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        error.BundleFailed => return zignapi.fail(err.message),
+    };
+}
+
+/// Les options telles qu'on les écrit en JS : `{ format: 'esm' | 'iife',
+/// dead: bool }`. zignapi convertit l'objet JS en struct, champ par champ.
+const JsOptions = struct {
+    format: []const u8 = "esm",
+    dead: bool = false,
+};
+
+/// bundleWith(entryPath, { format, dead }) -> { code, stats, dead }.
+/// La porte d'entrée du CLI : un seul appel pour tout ce qu'il sait faire.
+fn bundleWith(a: Allocator, entry: []const u8, opts: JsOptions) !linker.Report {
+    const format: linker.Format = if (std.mem.eql(u8, opts.format, "iife"))
+        .iife
+    else if (std.mem.eql(u8, opts.format, "esm"))
+        .esm
+    else
+        return zignapi.fail(try std.fmt.allocPrint(
+            a,
+            "format inconnu '{s}' (attendus : esm, iife)",
+            .{opts.format},
+        ));
+
+    var t: std.Io.Threaded = undefined;
+    var err: linker.BundleError = .{};
+    return linker.bundleReport(a, blockingIo(&t), entry, &err, opts.dead, .{ .format = format }) catch |e| switch (e) {
         error.OutOfMemory => return e,
         error.BundleFailed => return zignapi.fail(err.message),
     };
@@ -139,6 +168,7 @@ comptime {
         .bundleStats = bundleStats,
         .bundlePrint = bundlePrint,
         .bundleReport = bundleReport,
+        .bundleWith = bundleWith,
         .VERSION = VERSION,
     });
 }

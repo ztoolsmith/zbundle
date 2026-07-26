@@ -19,7 +19,18 @@ CLAUDE.md
 # expected.json).
 /corpus/real/node_modules/
 
+# EXCEPTION : le shim `react/jsx-runtime` du projet ts-jsx n'est PAS une
+# dependance installee — c'est un fichier SOURCE de la fixture (le runtime JSX
+# minimal, 4 lignes). Le motif `node_modules/` l'ignorerait, et la CI se
+# retrouverait sans lui : le projet ts-jsx echouerait sur un clone frais.
+!/playground/projects/ts-jsx/node_modules/
+!/playground/projects/ts-jsx/node_modules/**
+
 # Artefacts du playground (bundles générés + miroirs de référence)
 /playground/projects/*/.bundle.mjs
 /playground/projects/*/.reference/
 /playground/projects/*/.inspect.mjs
+
+# Bundles produits par le CLI dans le bac a sable
+/playground/src/bundle.js
+/playground/projects/*/.witness.mjs
