@@ -20,7 +20,7 @@ const Allocator = std.mem.Allocator;
 
 /// zbundle's version (mirrors `package.json`). A **module constant** — zignapi
 /// registers non-function values as they are.
-pub const VERSION = "0.1.0";
+pub const VERSION = "0.1.1";
 
 /// The `Io` for one call (Zig 0.16: all disk access goes through this
 /// interface). The single-threaded variant starts no worker and allocates

@@ -475,7 +475,7 @@ test("live binding imported BY NAME: accepted (hoisting handles it)", () => {
 test("VERSION follows package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.1.0");
+  assert.equal(zbundle.VERSION, "0.1.1");
 });
 
 // ══════════════════ v0.3 : LE TREE-SHAKING ══════════════════
@@ -565,7 +565,7 @@ test("non-regression: the linking projects keep their behaviour", () => {
 test("VERSION matches package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.1.0");
+  assert.equal(zbundle.VERSION, "0.1.1");
 });
 
 // ══════════════════ LE CLI ══════════════════

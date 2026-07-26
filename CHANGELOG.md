@@ -4,6 +4,22 @@ All notable changes to zbundle. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/).
 
+## [0.1.1] — 2026-07-26
+
+A **documentation** release. No code changes: the bundler is byte for byte the
+one shipped in 0.1.0.
+
+### Added
+
+- **`packages/zbundle/README.md`** — the package README, the one npm renders. It
+  was missing, so the npm page was blank while the GitHub-facing root README had
+  been there all along. It stands on its own: the command and its flags, the
+  full JS API, and above all **how it works** — the resolution table in order,
+  breadth-first traversal and cycle detection, scope hoisting (with the
+  reference → binding → final name chain, and the table of what materializes and
+  what vanishes), and mark & sweep with its explicit purity rule. Plus the four
+  refusals and why each one exists.
+
 ## [0.1.0] — 2026-07-26
 
 **The first published release.** A JavaScript/TypeScript bundler written in Zig,
