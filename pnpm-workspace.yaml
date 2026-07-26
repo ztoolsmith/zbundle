@@ -3,22 +3,11 @@ packages:
   - "playground"
 
 # pnpm refuse par défaut d'installer un paquet publié il y a moins de N jours
-# (garde anti-supply-chain). Nos propres paquets de plateforme sont publiés puis
-# réinstallés dans la foulée : on les exempte.
+# (garde anti-supply-chain). On exempte ce qu'on publie nous-mêmes et qu'on
+# réinstalle dans la foulée.
 #
-# RÈGLE : ces entrées doivent couvrir les versions PRÉSENTES DANS LE LOCKFILE,
-# pas seulement celle qu'on prépare. Pendant une release on garde donc l'ancienne
-# ET la nouvelle, et on purge l'ancienne au cycle suivant.
+# Les paquets de plateforme n'apparaissent PLUS ici : ils ne sont plus déclarés
+# dans le package.json committé (cf. « Versionnage et publication »), donc le
+# lockfile ne les référence jamais.
 minimumReleaseAgeExclude:
-  - '@zbundle/binding-darwin-arm64@0.1.0'
-  - '@zbundle/binding-darwin-x64@0.1.0'
-  - '@zbundle/binding-linux-arm64-gnu@0.1.0'
-  - '@zbundle/binding-linux-x64-gnu@0.1.0'
-  - '@zbundle/binding-linux-x64-musl@0.1.0'
-  - '@zbundle/binding-win32-x64-msvc@0.1.0'
-  - '@zbundle/binding-darwin-arm64@0.1.1'
-  - '@zbundle/binding-darwin-x64@0.1.1'
-  - '@zbundle/binding-linux-arm64-gnu@0.1.1'
-  - '@zbundle/binding-linux-x64-gnu@0.1.1'
-  - '@zbundle/binding-linux-x64-musl@0.1.1'
-  - '@zbundle/binding-win32-x64-msvc@0.1.1'
+  - zignapi@0.4.1

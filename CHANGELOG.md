@@ -20,6 +20,16 @@ one shipped in 0.1.0.
   what vanishes), and mark & sweep with its explicit purity rule. Plus the four
   refusals and why each one exists.
 
+### Fixed
+
+- **The `@zbundle/binding-*` `optionalDependencies` are no longer declared in the
+  committed `package.json`.** Pinning them there meant depending on an artifact
+  that only exists **after** publication: pnpm could not resolve it, dropped it
+  from the lockfile, and every later `pnpm install --frozen-lockfile` failed with
+  `ERR_PNPM_OUTDATED_LOCKFILE`. `zignapi prepublish` now writes them at release
+  time — **the published package is identical**, only the versioned manifest
+  changed.
+
 ## [0.1.0] — 2026-07-26
 
 **The first published release.** A JavaScript/TypeScript bundler written in Zig,
