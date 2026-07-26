@@ -4,9 +4,9 @@
     .fingerprint = 0xc1cdc345f538e502, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        // Les DEUX repos de l'org, en siblings (même convention que zcompiler ->
-        // zignapi). `zcompiler` fournit le module Zig `zcompiler` (parser +
-        // semantic + AST) ; `zignapi` fournit le module `zignapi` (le pont N-API).
+        // BOTH sibling repositories (same convention as zcompiler -> zignapi).
+        // `zcompiler` provides the `zcompiler` Zig module (parser + semantic +
+        // AST); `zignapi` provides the `zignapi` module (the N-API bridge).
         .zignapi = .{ .path = "../../../zignapi/packages/zignapi" },
         .zcompiler = .{ .path = "../../../zcompiler/packages/zcompiler" },
     },

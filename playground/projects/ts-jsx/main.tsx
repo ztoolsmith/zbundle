@@ -1,7 +1,7 @@
 import { Badge } from './badge.jsx';
 import { titles, type Title } from './data.ts';
 
-// Un mini-renderer : on evalue l'arbre produit par jsx() pour obtenir du texte.
+// A mini renderer: we evaluate the tree produced by jsx() to get text.
 type Element = { type: unknown; props: { children?: unknown } };
 
 function render(node: unknown): string {

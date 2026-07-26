@@ -1,11 +1,31 @@
 {
-  "why": "Un re-export EST une dependance : `export { x } from './y'` ne cite jamais y dans le corps du module, mais y doit etre dans le graphe. Le piege classique.",
+  "why": "A re-export IS a dependency: `export { x } from './y'` never mentions y in the module body, yet y must be in the graph. The classic trap.",
   "entry": "entry.js",
-  "modules": ["entry.js", "y.js", "z.js", "local.js"],
+  "modules": [
+    "entry.js",
+    "y.js",
+    "z.js",
+    "local.js"
+  ],
   "edges": [
-    { "from": "entry.js", "to": "y.js", "specifier": "./y.js", "kind": "re_export" },
-    { "from": "entry.js", "to": "z.js", "specifier": "./z.js", "kind": "re_export" },
-    { "from": "entry.js", "to": "local.js", "specifier": "./local.js", "kind": "import" }
+    {
+      "from": "entry.js",
+      "to": "y.js",
+      "specifier": "./y.js",
+      "kind": "re_export"
+    },
+    {
+      "from": "entry.js",
+      "to": "z.js",
+      "specifier": "./z.js",
+      "kind": "re_export"
+    },
+    {
+      "from": "entry.js",
+      "to": "local.js",
+      "specifier": "./local.js",
+      "kind": "import"
+    }
   ],
   "externals": [],
   "cycles": []

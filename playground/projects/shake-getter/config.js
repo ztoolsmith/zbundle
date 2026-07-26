@@ -7,6 +7,6 @@ const source = {
   },
 };
 
-// `source.value` est un ACCES MEMBRE : potentiellement un getter, donc un appel
-// deguise. Le juger pur et le supprimer changerait le comportement observable.
+// `source.value` is a MEMBER ACCESS: potentially a getter, so a disguised call.
+// Judging it pure and removing it would change observable behaviour.
 export const config = source.value;

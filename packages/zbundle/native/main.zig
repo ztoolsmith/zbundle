@@ -1,13 +1,14 @@
-//! Pont N-API : expose le resolver + le graphe à Node.js via zignapi.
+//! N-API bridge: exposes the resolver, the graph and the bundler to Node.js
+//! through zignapi.
 //!
-//! Trivial par construction, et c'est le but. Les composites de zignapi v1
-//! sérialisent la structure du graphe toute seule (structs → objets, slices →
-//! tableaux, `?u32` → `number | null`, enums → leur nom) : aucune glue à écrire,
-//! aucune « struct vue » à maintenir. Les types de `graph.zig` SONT la forme JS
-//! — c'est la 3ᵉ fois que l'org le vérifie (zcompiler, hello-world, zbundle).
+//! Trivial by construction, and that is the point. zignapi's composites
+//! serialize these structures on their own (structs -> objects, slices ->
+//! arrays, `?u32` -> `number | null`, enums -> their name): no glue to write, no
+//! "view struct" to maintain. The types in `graph.zig` and `linker.zig` ARE the
+//! JS shape.
 //!
-//! Chaque fonction : demander l'allocateur d'appel, faire le travail, retourner
-//! une valeur Zig. zignapi convertit puis libère.
+//! Every function: ask for the call allocator, do the work, return a Zig value.
+//! zignapi converts, then frees.
 
 const std = @import("std");
 const zignapi = @import("zignapi");
@@ -17,24 +18,24 @@ const resolver = @import("resolver.zig");
 
 const Allocator = std.mem.Allocator;
 
-/// La version de zbundle (miroir du `package.json`). Une **constante de module**
-/// — zignapi enregistre les valeurs non-fonction telles quelles.
+/// zbundle's version (mirrors `package.json`). A **module constant** — zignapi
+/// registers non-function values as they are.
 pub const VERSION = "0.1.0";
 
-/// L'`Io` d'un appel (Zig 0.16 : tout accès disque passe par cette interface).
-/// La variante mono-thread ne démarre aucun worker et n'alloue rien : c'est
-/// exactement ce qu'il faut à un build synchrone. Sa durée de vie = l'appel.
+/// The `Io` for one call (Zig 0.16: all disk access goes through this
+/// interface). The single-threaded variant starts no worker and allocates
+/// nothing: exactly right for a synchronous build. Its lifetime = the call.
 fn blockingIo(t: *std.Io.Threaded) std.Io {
     t.* = .init_single_threaded;
     return t.io();
 }
 
-// ---- graph : la structure complète ----
+// ---- graph: the full structure ----
 
 /// graph(entryPath) -> { entry, modules, edges, externals, cycles, stats }.
 ///
-/// Un specifier relatif introuvable lève une exception JS dont le message liste
-/// les chemins essayés. Un specifier nu ne lève jamais : il est external.
+/// A relative specifier that cannot be found throws a JS exception whose message
+/// lists the attempted paths. A bare specifier never throws: it is external.
 fn graphImpl(a: Allocator, entry: []const u8) !graph.Graph {
     var t: std.Io.Threaded = undefined;
     var err: graph.BuildError = .{};
@@ -45,10 +46,10 @@ fn graphImpl(a: Allocator, entry: []const u8) !graph.Graph {
     return built.graph;
 }
 
-// ---- graphPrint : le même graphe, en arbre lisible ----
+// ---- graphPrint: the same graph, as a readable tree ----
 
-/// graphPrint(entryPath) -> string. L'entry en racine, un niveau par
-/// profondeur, les externals marqués, les cycles listés, les stats en pied.
+/// graphPrint(entryPath) -> string. The entry as root, one level per depth,
+/// externals marked, cycles listed, statistics at the bottom.
 fn graphPrint(a: Allocator, entry: []const u8) ![]const u8 {
     const g = try graphImpl(a, entry);
     var out: std.ArrayList(u8) = .empty;
@@ -56,11 +57,11 @@ fn graphPrint(a: Allocator, entry: []const u8) ![]const u8 {
     return out.items;
 }
 
-// ---- resolve : le resolver seul (une résolution, sans graphe) ----
+// ---- resolve: the resolver alone (one resolution, no graph) ----
 
 /// resolve(fromDir, specifier) -> { kind: "file" | "external", path }.
-/// `path` est absolu et canonique pour un fichier, le specifier tel quel pour
-/// un external. Introuvable -> exception avec les chemins essayés.
+/// `path` is absolute and canonical for a file, the specifier as written for an
+/// external. Not found -> an exception with the attempted paths.
 fn resolveImpl(a: Allocator, from_dir: []const u8, specifier: []const u8) !resolver.Resolution {
     var t: std.Io.Threaded = undefined;
     var diag: resolver.Diagnostic = .{};
@@ -70,13 +71,13 @@ fn resolveImpl(a: Allocator, from_dir: []const u8, specifier: []const u8) !resol
     };
 }
 
-// ---- bundle : LE livrable de la v0.2 ----
+// ---- bundle: the main deliverable ----
 
-/// bundle(entryPath) -> string : UN fichier de JS exécutable (format ESM).
+/// bundle(entryPath) -> string: ONE executable JS file (ESM format).
 ///
-/// Les refus de la v0.2 (top-level await, `import()` interne, live binding
-/// mutable, `import.meta`) lèvent une exception JS dont le message dit quoi
-/// faire — jamais un bundle silencieusement faux.
+/// The refusals (top-level await, internal `import()`, a live binding exposed
+/// through a namespace, `import.meta`) throw a JS exception whose message says
+/// what to do — never a silently wrong bundle.
 fn bundleImpl(a: Allocator, entry: []const u8) ![]const u8 {
     var t: std.Io.Threaded = undefined;
     var err: linker.BundleError = .{};
@@ -87,7 +88,7 @@ fn bundleImpl(a: Allocator, entry: []const u8) ![]const u8 {
     return b.code;
 }
 
-/// bundleStats(entryPath) -> { code, stats } : le bundle ET ses mesures.
+/// bundleStats(entryPath) -> { code, stats }: the bundle AND its measurements.
 fn bundleStats(a: Allocator, entry: []const u8) !linker.Bundle {
     var t: std.Io.Threaded = undefined;
     var err: linker.BundleError = .{};
@@ -97,8 +98,8 @@ fn bundleStats(a: Allocator, entry: []const u8) !linker.Bundle {
     };
 }
 
-/// bundleReport(entryPath) -> { code, stats, dead } : le bundle ET la liste de
-/// ce que le tree-shaking a éliminé (module, ligne, extrait, raison).
+/// bundleReport(entryPath) -> { code, stats, dead }: the bundle AND the list of
+/// what tree-shaking eliminated (module, line, snippet, reason).
 fn bundleReport(a: Allocator, entry: []const u8) !linker.Report {
     var t: std.Io.Threaded = undefined;
     var err: linker.BundleError = .{};
@@ -108,15 +109,15 @@ fn bundleReport(a: Allocator, entry: []const u8) !linker.Report {
     };
 }
 
-/// Les options telles qu'on les écrit en JS : `{ format: 'esm' | 'iife',
-/// dead: bool }`. zignapi convertit l'objet JS en struct, champ par champ.
+/// The options as written in JS: `{ format: 'esm' | 'iife', dead: bool }`.
+/// zignapi converts the JS object into a struct, field by field.
 const JsOptions = struct {
     format: []const u8 = "esm",
     dead: bool = false,
 };
 
 /// bundleWith(entryPath, { format, dead }) -> { code, stats, dead }.
-/// La porte d'entrée du CLI : un seul appel pour tout ce qu'il sait faire.
+/// The CLI's entry point: a single call for everything it can do.
 fn bundleWith(a: Allocator, entry: []const u8, opts: JsOptions) !linker.Report {
     const format: linker.Format = if (std.mem.eql(u8, opts.format, "iife"))
         .iife
@@ -125,7 +126,7 @@ fn bundleWith(a: Allocator, entry: []const u8, opts: JsOptions) !linker.Report {
     else
         return zignapi.fail(try std.fmt.allocPrint(
             a,
-            "format inconnu '{s}' (attendus : esm, iife)",
+            "unknown format '{s}' (expected: esm, iife)",
             .{opts.format},
         ));
 
@@ -137,8 +138,8 @@ fn bundleWith(a: Allocator, entry: []const u8, opts: JsOptions) !linker.Report {
     };
 }
 
-/// bundlePrint(entryPath) -> string : le bundle précédé de ses stats en
-/// commentaire. Le pendant de `graphPrint` — fait pour l'œil humain.
+/// bundlePrint(entryPath) -> string: the bundle preceded by its statistics as a
+/// comment. The counterpart of `graphPrint` — made for human eyes.
 fn bundlePrint(a: Allocator, entry: []const u8) ![]const u8 {
     const b = try bundleStats(a, entry);
     const s = b.stats;
@@ -147,9 +148,9 @@ fn bundlePrint(a: Allocator, entry: []const u8) ![]const u8 {
     else
         0.0;
     return std.fmt.allocPrint(a,
-        \\// {d} modules emis ({d} elimines), {d} externals, {d} bindings renommes
-        \\// tree-shaking : {d} statements gardes, {d} elimines
-        \\// {d} -> {d} octets ({d:.0} %) en {d:.2} ms
+        \\// {d} modules emitted ({d} eliminated), {d} externals, {d} bindings renamed
+        \\// tree-shaking: {d} statements kept, {d} eliminated
+        \\// {d} -> {d} bytes ({d:.0} %) in {d:.2} ms
         \\{s}
     , .{
         s.modules,          s.modules_dropped,   s.externals, s.renamed,

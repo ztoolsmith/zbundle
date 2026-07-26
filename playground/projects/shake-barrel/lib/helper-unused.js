@@ -1,2 +1,2 @@
-// Tire UNIQUEMENT par les 19 modules inutilises : doit disparaitre.
+// Pulled in ONLY by the 19 unused modules: must disappear.
 export const helperOfUnused = (x) => x - 1;

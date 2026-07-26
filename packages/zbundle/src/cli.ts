@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-//! La commande `zbundle` : bundler depuis un terminal, sans écrire de glue.
+//! The `zbundle` command: bundling from a terminal, without writing glue.
 //!
-//! Tout le travail est dans l'addon (`../index.js`). Ce fichier ne fait que
-//! trois choses, et c'est voulu :
-//!   1. lire des arguments,
-//!   2. écrire le résultat quelque part,
-//!   3. **présenter les refus** — la partie qui compte vraiment. Un bundler qui
-//!      refuse doit dire quoi faire, et le dire lisiblement.
+//! All the work lives in the addon (`../index.js`). This file does three things,
+//! and that is deliberate:
+//!   1. read arguments,
+//!   2. write the result somewhere,
+//!   3. **present refusals** — the part that really matters. A bundler that
+//!      refuses must say what to do, and say it readably.
 import { parseArgs } from "node:util";
 import { writeFileSync, watch, existsSync, statSync } from "node:fs";
 import { dirname, resolve, relative } from "node:path";
@@ -14,29 +14,29 @@ import process from "node:process";
 
 import { bundleWith, graphPrint, VERSION } from "../index.js";
 
-const HELP = `zbundle — bundler JavaScript/TypeScript ecrit en Zig
+const HELP = `zbundle — a JavaScript/TypeScript bundler written in Zig
 
 Usage:
-  zbundle <entry> [-o <fichier>]      Bundler (ESM, un seul fichier)
-  zbundle <entry> --graph             Afficher le graphe de modules, sans bundler
-  zbundle <entry> --dead              Bundler + lister ce que le tree-shaking a elimine
-  zbundle <entry> --watch -o <f>      Rebundler a chaque changement
+  zbundle <entry> [-o <file>]         Bundle (ESM, a single file)
+  zbundle <entry> --graph             Show the module graph, without bundling
+  zbundle <entry> --dead              Bundle + list what tree-shaking removed
+  zbundle <entry> --watch -o <f>      Rebundle on every change
 
 Options:
-  -o, --out <fichier>   Ecrire ici (defaut : la sortie standard)
-  -f, --format <fmt>    esm (defaut) | iife  — iife exige zero dependance externe
-      --dead            Lister le code elimine (module, ligne, raison)
-      --graph           Le graphe de modules au lieu du bundle
-      --watch           Reconstruire quand un module change (avec -o)
-      --quiet           Pas de statistiques
-  -h, --help            Cette aide
-  -v, --version         La version
+  -o, --out <file>      Write here (default: standard output)
+  -f, --format <fmt>    esm (default) | iife  — iife needs zero external deps
+      --dead            List removed code (module, line, reason)
+      --graph           The module graph instead of the bundle
+      --watch           Rebuild when a module changes (requires -o)
+      --quiet           No statistics
+  -h, --help            This help
+  -v, --version         The version
 
-Les statistiques vont sur la sortie d'ERREUR : \`zbundle src/index.js > out.js\`
-donne un fichier propre, et les chiffres restent lisibles a l'ecran.
+Statistics go to STDERR: \`zbundle src/index.js > out.js\` gives a clean file,
+and the numbers stay readable on screen.
 `;
 
-// Couleurs seulement si on parle a un terminal (sinon on pollue les pipes).
+// Colours only when talking to a terminal (otherwise we pollute pipes).
 const tty = process.stderr.isTTY === true;
 const c = (code: string, s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
 const bold = (s: string) => c("1", s);
@@ -62,10 +62,10 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-/** Les chiffres, en une ligne dense mais lisible. */
+/** The numbers, on one dense but readable line. */
 function reportStats(s: Stats, out: string | undefined, format: string): void {
   const pct = s.input_bytes > 0 ? ((100 * s.output_bytes) / s.input_bytes).toFixed(0) : "0";
-  // Le plus court des deux : un chemin relatif truffé de `../..` est illisible.
+  // The shorter of the two: a relative path full of `../..` is unreadable.
   const rel = out ? relative(process.cwd(), out) : "";
   const where = out ? (rel.length < out.length ? rel : out) : "(stdout)";
   const shaken =
@@ -76,10 +76,10 @@ function reportStats(s: Stats, out: string | undefined, format: string): void {
     `${green("✔")} ${bold(where)}  ${s.modules} modules  ${s.externals} externals${shaken}\n` +
       `  ${s.input_bytes} → ${s.output_bytes} octets (${pct} %) en ${s.bundle_ms.toFixed(2)} ms  ${dim(format)}\n`,
   );
-  // Une IIFE n'exporte rien : si l'entry exportait, on le DIT.
+  // An IIFE exports nothing: if the entry did export, we SAY so.
   if (format === "iife" && s.entry_exports > 0) {
     process.stderr.write(
-      dim(`  note : ${s.entry_exports} export(s) de l'entry perdus — une IIFE n'exporte rien\n`),
+      dim(`  note: ${s.entry_exports} entry export(s) lost — an IIFE exports nothing\n`),
     );
   }
 }
@@ -91,10 +91,10 @@ interface Dead {
   reason: string;
 }
 
-/** Ce que le tree-shaking a retiré, groupé par module. */
+/** What tree-shaking removed, grouped by module. */
 function reportDead(dead: Dead[]): void {
   if (dead.length === 0) {
-    process.stderr.write(dim("  (rien elimine : tout etait atteignable)\n"));
+    process.stderr.write(dim("  (nothing removed: everything was reachable)\n"));
     return;
   }
   const byModule = new Map<string, Dead[]>();
@@ -103,7 +103,7 @@ function reportDead(dead: Dead[]): void {
     list.push(d);
     byModule.set(d.module, list);
   }
-  process.stderr.write(`\n${bold("elimine par le tree-shaking")}\n`);
+  process.stderr.write(`\n${bold("removed by tree-shaking")}\n`);
   for (const [mod, list] of byModule) {
     process.stderr.write(`  ${mod}\n`);
     for (const d of list) {
@@ -114,11 +114,11 @@ function reportDead(dead: Dead[]): void {
 }
 
 /**
- * Un build. Renvoie les chemins des modules, pour --watch.
+ * One build. Returns the module paths, for --watch.
  *
- * **Ne quitte pas le process** : c'est l'appelant qui décide. En one-shot une
- * erreur est fatale ; en `--watch` elle ne l'est surtout pas — on affiche, on
- * garde la main, et le prochain enregistrement relance.
+ * **Does not exit the process**: the caller decides. In one-shot mode an error
+ * is fatal; under `--watch` it must not be — we print, keep control, and the
+ * next save retries.
  */
 function build(entry: string, opts: { out?: string; format: string; dead: boolean; quiet: boolean }): string[] {
   const result = bundleWith(entry, { format: opts.format, dead: opts.dead }) as {
@@ -133,15 +133,15 @@ function build(entry: string, opts: { out?: string; format: string; dead: boolea
   if (!opts.quiet) reportStats(result.stats, opts.out, opts.format);
   if (opts.dead) reportDead(result.dead);
 
-  // Les modules réellement lus, pour savoir quoi surveiller.
+  // The modules actually read, so we know what to watch.
   return modulesOf(entry);
 }
 
-/** Les chemins des modules du graphe (pour --watch). */
+/** The graph's module paths (for --watch). */
 function modulesOf(entry: string): string[] {
   try {
-    // `graphPrint` est déjà là ; on n'ajoute pas d'API pour si peu. Les chemins
-    // affichés sont relatifs au dossier de l'entry.
+    // `graphPrint` is already there; no need for extra API for so little. The
+    // printed paths are relative to the entry's directory.
     const root = dirname(entry);
     return graphPrint(entry)
       .split("\n")
@@ -183,11 +183,11 @@ function main(): void {
     process.exit(1);
   }
   if (positionals.length > 1) {
-    fail(`une seule entry a la fois (recu : ${positionals.join(", ")})`);
+    fail(`only one entry at a time (received: ${positionals.join(", ")})`);
   }
 
   const entry = resolve(positionals[0]!);
-  if (!existsSync(entry)) fail(`entry introuvable : ${positionals[0]}`);
+  if (!existsSync(entry)) fail(`entry not found: ${positionals[0]}`);
 
   if (values.graph) {
     process.stdout.write(graphPrint(entry));
@@ -201,24 +201,24 @@ function main(): void {
     try {
       build(entry, opts);
     } catch (err) {
-      // LE moment qui compte : les refus de zbundle disent quoi faire. On les
-      // réémet tels quels, sans les reformater.
+      // THE moment that matters: zbundle's refusals say what to do. We re-emit
+      // them as is, without reformatting.
       fail(err instanceof Error ? err.message : String(err));
     }
     return;
   }
 
-  // --watch : sans -o on écrirait le bundle dans le terminal à chaque frappe.
-  if (!out) fail("--watch demande -o <fichier> (sinon le bundle part dans le terminal)");
+  // --watch: without -o we would write the bundle to the terminal on every keystroke.
+  if (!out) fail("--watch requires -o <file> (otherwise the bundle goes to the terminal)");
 
-  /** Un build de watch : jamais fatal, on garde la main quoi qu'il arrive. */
+  /** A watch build: never fatal, we keep control whatever happens. */
   const attempt = (): string[] => {
     try {
       return build(entry, opts);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`${red("✘")} ${message.replace(/\n/g, "\n  ")}\n`);
-      return watched; // on continue de surveiller les mêmes fichiers
+      return watched; // keep watching the same files
     }
   };
 
@@ -227,7 +227,7 @@ function main(): void {
   let timer: NodeJS.Timeout | undefined;
   const rebuild = () => {
     clearTimeout(timer);
-    // Un éditeur écrit souvent en plusieurs fois : on laisse retomber.
+    // An editor often writes in several steps: let it settle.
     timer = setTimeout(() => {
       process.stderr.write(dim(`\n— rebuild ${new Date().toLocaleTimeString()}\n`));
       watched = attempt();
@@ -241,7 +241,7 @@ function main(): void {
     watchers = watched.map((p) => watch(p, rebuild));
   };
   rearm();
-  process.stderr.write(dim(`— watch : ${watched.length} modules surveilles (Ctrl-C pour arreter)\n`));
+  process.stderr.write(dim(`— watch: ${watched.length} modules watched (Ctrl-C to stop)\n`));
 }
 
 try {

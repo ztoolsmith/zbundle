@@ -1,26 +1,26 @@
-//! Le TREE-SHAKING, moitié « analyse » : découper un module en **unités**
-//! (ses statements top-level) et décider, pour chacune, si elle est PURE.
+//! TREE-SHAKING, the "analysis" half: cutting a module into **units** (its
+//! top-level statements) and deciding, for each one, whether it is PURE.
 //!
-//! Ce fichier ne connaît qu'UN module à la fois — pas le graphe, pas les autres
-//! modules, pas le linker. C'est voulu : la pureté est une propriété locale, et
-//! ça rend toute cette logique testable sans toucher au disque. Le marquage
-//! cross-module (qui a besoin des chaînes d'import) vit dans `linker.zig`.
+//! This file only ever knows ONE module at a time — not the graph, not the other
+//! modules, not the linker. That is deliberate: purity is a local property, and
+//! it makes all of this logic testable without touching the disk. Cross-module
+//! marking (which needs import chains) lives in `linker.zig`.
 //!
-//! ## La règle de pureté, en une phrase
+//! ## The purity rule, in one sentence
 //!
-//!   > **Dans le doute : IMPUR.**
+//!   > **When in doubt: IMPURE.**
 //!
-//! Un bundle 5 % plus gros est un bug de moins. Un statement jugé pur à tort
-//! disparaît, et avec lui un effet de bord que le programme attendait — c'est
-//! exactement le genre de bug qu'on ne trouve qu'en production. Donc : tout ce
-//! qui n'est pas manifestement inerte est traité comme une racine.
+//! A bundle 5 % larger is one bug fewer. A statement wrongly judged pure
+//! disappears, and with it a side effect the program expected — exactly the kind
+//! of bug you only find in production. So: anything not manifestly inert is
+//! treated as a root.
 //!
-//! ## Granularité (v0.3) : LE STATEMENT TOP-LEVEL
+//! ## Granularity: THE TOP-LEVEL STATEMENT
 //!
-//! Une déclaration vit ou meurt en entier. `const { a, b } = x` où seul `a` sert
-//! garde les deux. Pas de découpe intra-statement, pas d'élimination de
-//! propriétés d'objet. C'est le niveau de base de rollup, et c'est déjà
-//! l'essentiel du gain (les barrels).
+//! A declaration lives or dies as a whole. `const { a, b } = x` where only `a` is
+//! used keeps both. No intra-statement splitting, no object-property
+//! elimination. That is rollup's baseline, and it is already where most of the
+//! gain is (barrels).
 
 const std = @import("std");
 const zc = @import("zcompiler");
@@ -29,23 +29,23 @@ const Allocator = std.mem.Allocator;
 const Node = zc.Node;
 const Binding = zc.semantic.Binding;
 
-/// Une **unité** de tree-shaking : un statement top-level, avec ce qu'il déclare,
-/// ce qu'il utilise, et s'il peut être supprimé sans rien changer d'observable.
+/// A tree-shaking **unit**: a top-level statement, with what it declares, what it
+/// uses, and whether it can be removed without changing anything observable.
 pub const Unit = struct {
     stmt: *Node,
-    /// Les bindings du scope module que ce statement déclare.
+    /// The module-scope bindings this statement declares.
     declares: []const *Binding,
-    /// Les bindings (module scope) qu'il référence, hors ceux qu'il déclare.
+    /// The module-scope bindings it references, excluding those it declares.
     uses: []const *Binding,
-    /// Aucun effet de bord observable à l'évaluation du module.
+    /// No side effect observable when the module is evaluated.
     pure: bool,
-    /// Marqué vivant par la phase de marquage (cf. `linker.zig`).
+    /// Marked live by the mark phase (see `linker.zig`).
     alive: bool = false,
 };
 
-/// Découpe `program` en unités. `sem` doit être l'analyse DE CE program.
+/// Cuts `program` into units. `sem` must be the analysis OF THAT program.
 pub fn units(a: Allocator, program: *Node, source: []const u8, sem: *zc.semantic.Semantic) Allocator.Error![]Unit {
-    const scope = sem.scopes.items[0]; // le scope module
+    const scope = sem.scopes.items[0]; // the module scope
     var out: std.ArrayList(Unit) = .empty;
 
     for (program.kind.program.body) |stmt| {
@@ -77,7 +77,7 @@ pub fn units(a: Allocator, program: *Node, source: []const u8, sem: *zc.semantic
     return out.items;
 }
 
-/// Les bindings du scope module déclarés par un statement top-level.
+/// The module-scope bindings declared by a top-level statement.
 fn collectDeclared(
     a: Allocator,
     stmt: *Node,
@@ -93,9 +93,9 @@ fn collectDeclared(
         .class_declaration => |c| if (c.id) |id| push(a, scope, id.litText(source), out),
         .ts_enum => |e| push(a, scope, e.id.litText(source), out),
         .ts_namespace => |n| push(a, scope, n.id.litText(source), out),
-        // `export const x = 1` : c'est la déclaration interne qui lie.
+        // `export const x = 1`: the inner declaration is what binds.
         .export_named_declaration => |e| if (e.declaration) |d| collectDeclared(a, d, source, scope, out),
-        // `import … from` : les specifiers lient des noms locaux (des alias).
+        // `import … from`: specifiers bind local names (aliases).
         .import_declaration => |d| for (d.specifiers) |s| switch (s.kind) {
             .import_default_specifier => |x| push(a, scope, x.local.litText(source), out),
             .import_namespace_specifier => |x| push(a, scope, x.local.litText(source), out),
@@ -143,12 +143,12 @@ const UseCollector = struct {
     out: *std.ArrayList(*Binding),
 
     fn enter(self: *UseCollector, node: *Node) ?*Node {
-        // `node_binding` associe CHAQUE nœud identifiant (déclaration ou
-        // référence) à son binding : c'est la table que le mangler utilise pour
-        // renommer, et elle sert ici à savoir qui touche quoi.
+        // `node_binding` maps EVERY identifier node (declaration or reference)
+        // to its binding: it is the table the mangler uses to rename, and here it
+        // tells us who touches what.
         const b = self.sem.node_binding.get(node) orelse return null;
-        if (self.declared.contains(b)) return null; // se déclarer n'est pas s'utiliser
-        if (!isModuleScope(self.scope, b)) return null; // un local de fonction : hors sujet
+        if (self.declared.contains(b)) return null; // declaring is not using
+        if (!isModuleScope(self.scope, b)) return null; // a function local: not our concern
         if ((self.seen.getOrPut(self.a, b) catch return null).found_existing) return null;
         self.out.append(self.a, b) catch {};
         return null;
@@ -166,20 +166,20 @@ fn isModuleScope(scope: *zc.semantic.Scope, b: *Binding) bool {
     return false;
 }
 
-// ---- la pureté ----
+// ---- purity ----
 
-/// Un statement top-level peut-il disparaître sans rien changer d'observable ?
+/// Can a top-level statement disappear without changing anything observable?
 ///
-/// PURS : les déclarations de fonction/classe (le corps n'est pas évalué), les
-/// `const/let/var` dont TOUS les initialiseurs sont purs, les déclarations de
-/// module (`import`, `export`), les types TS (déjà effacés à ce stade).
+/// PURE: function/class declarations (the body is not evaluated), `const/let/var`
+/// whose initializers are ALL pure, module declarations (`import`, `export`), TS
+/// types (already erased by this point).
 ///
-/// IMPURS (donc racines) : tout le reste. Notamment tout appel (`f()`, `new X()`,
-/// une IIFE, un tagged template), toute mutation (`x.y = …`, `x++`), et tout
-/// accès membre (`obj.prop` peut déclencher un **getter**).
+/// IMPURE (hence roots): everything else. Notably any call (`f()`, `new X()`, an
+/// IIFE, a tagged template), any mutation (`x.y = …`, `x++`), and any member
+/// access (`obj.prop` may trigger a **getter**).
 pub fn isPureTopLevel(stmt: *Node, source: []const u8) bool {
     return switch (stmt.kind) {
-        // Une fonction déclarée n'exécute rien tant qu'on ne l'appelle pas.
+        // A declared function runs nothing until it is called.
         .function_declaration => true,
         .class_declaration => |c| isPureClass(c, source),
         .variable_declaration => |d| {
@@ -189,25 +189,24 @@ pub fn isPureTopLevel(stmt: *Node, source: []const u8) bool {
             }
             return true;
         },
-        // Déclarations de module : elles ne calculent rien par elles-mêmes.
-        // (Le module CIBLE, lui, a ses propres unités impures — c'est là que
-        // vivent ses effets de bord.)
+        // Module declarations: they compute nothing by themselves. (The TARGET
+        // module has its own impure units — that is where its side effects live.)
         .import_declaration, .export_all_declaration => true,
         .export_named_declaration => |e| if (e.declaration) |d| isPureTopLevel(d, source) else true,
         .export_default_declaration => |d| isPureExpr(d.declaration, source),
-        // TS : effacé avant d'arriver ici (le graphe normalise en JS pur), mais
-        // par sécurité, un type ne s'évalue pas.
+        // TS: erased before reaching here (the graph normalizes to plain JS), but
+        // for safety: a type does not evaluate.
         .ts_type_alias, .ts_interface => true,
-        // DANS LE DOUTE : IMPUR. Un `console.log(…)`, un `f()`, un `x.y = 1`,
-        // une boucle, un `if`, un `throw` — tout ça s'exécute à l'import.
+        // WHEN IN DOUBT: IMPURE. A `console.log(…)`, an `f()`, an `x.y = 1`, a
+        // loop, an `if`, a `throw` — all of it runs on import.
         else => false,
     };
 }
 
-/// Une expression peut-elle être évaluée sans effet observable ?
+/// Can an expression be evaluated without an observable effect?
 pub fn isPureExpr(node: *Node, source: []const u8) bool {
     return switch (node.kind) {
-        // Littéraux et identifiants : lire une variable est inerte.
+        // Literals and identifiers: reading a variable is inert.
         .number_literal,
         .string_literal,
         .boolean_literal,
@@ -217,7 +216,7 @@ pub fn isPureExpr(node: *Node, source: []const u8) bool {
         .identifier,
         .this_expression,
         => true,
-        // Une fonction n'exécute son corps qu'à l'appel.
+        // A function only runs its body when called.
         .function_expression, .arrow_function => true,
         .class_expression => |c| isPureClass(c, source),
         .array_expression => |x| {
@@ -242,50 +241,50 @@ pub fn isPureExpr(node: *Node, source: []const u8) bool {
         .binary_expression => |b| isPureExpr(b.left, source) and isPureExpr(b.right, source),
         .conditional_expression => |c| isPureExpr(c.@"test", source) and
             isPureExpr(c.consequent, source) and isPureExpr(c.alternate, source),
-        // `typeof x`, `!x`, `-x`, `void x` : inertes. `delete x.y` : une MUTATION.
+        // `typeof x`, `!x`, `-x`, `void x`: inert. `delete x.y`: a MUTATION.
         .unary_expression => |u| u.operator != .delete_ and isPureExpr(u.operand, source),
-        // Un APPEL peut tout faire — sauf s'il porte l'annotation `/* @__PURE__ */`.
+        // A CALL can do anything — unless it carries the `/* @__PURE__ */` annotation.
         .call_expression, .new_expression => hasPureAnnotation(source, node.start),
-        // `x.y` : `y` peut être un GETTER, donc un appel déguisé. Conservateur.
-        // (Rollup fait le même choix hors « known globals ».)
+        // `x.y`: `y` may be a GETTER, so a disguised call. Conservative.
+        // (Rollup makes the same choice outside its "known globals".)
         .member_expression => false,
-        // Mutations, appels déguisés, attente : impurs par nature.
+        // Mutations, disguised calls, awaiting: impure by nature.
         .assignment_expression,
         .update_expression,
         .await_expression,
         .yield_expression,
         .tagged_template_expression,
         => false,
-        else => false, // dans le doute
+        else => false, // when in doubt
     };
 }
 
 fn isPureProperty(p: *Node, source: []const u8) bool {
     return switch (p.kind) {
         .property => |pr| {
-            // Une clé calculée s'évalue : `{ [f()]: 1 }` n'est pas pur.
+            // A computed key evaluates: `{ [f()]: 1 }` is not pure.
             if (pr.computed and !isPureExpr(pr.key, source)) return false;
             return isPureExpr(pr.value, source);
         },
         .spread_element => |s| isPureExpr(s.argument, source),
-        // Un getter/setter défini ici ne s'exécute pas à la construction.
+        // A getter/setter defined here does not run at construction time.
         .method_definition => true,
         else => false,
     };
 }
 
-/// Une classe est pure si son évaluation (pas son instanciation) est inerte :
-/// une superclasse qui s'évalue sans effet, et aucun champ statique impur —
-/// les champs statiques, eux, SONT exécutés à la définition de la classe.
+/// A class is pure if its evaluation (not its instantiation) is inert: a
+/// superclass that evaluates without effect, and no impure static field — static
+/// fields ARE executed when the class is defined.
 fn isPureClass(c: zc.ast.Node.Class, source: []const u8) bool {
     if (c.superclass) |s| {
-        // `extends Base` (un identifiant) : inerte. `extends getBase()` : non.
+        // `extends Base` (an identifier): inert. `extends getBase()`: not.
         if (!isPureExpr(s, source)) return false;
     }
     if (c.body.kind != .class_body) return true;
     for (c.body.kind.class_body.members) |m| switch (m.kind) {
         .property_definition => |p| {
-            if (!p.static) continue; // un champ d'instance s'évalue à `new`, pas ici
+            if (!p.static) continue; // an instance field evaluates at `new`, not here
             if (p.computed and !isPureExpr(p.key, source)) return false;
             if (p.value) |v| if (!isPureExpr(v, source)) return false;
         },
@@ -299,17 +298,16 @@ fn isPureClass(c: zc.ast.Node.Class, source: []const u8) bool {
 
 /// L'annotation `/* @__PURE__ */` (ou `/* #__PURE__ */`) juste avant `start`.
 ///
-/// C'est la convention rollup/terser : elle promet qu'un appel n'a pas d'effet,
-/// donc qu'il est supprimable s'il n'est pas utilisé. Le lexer de zcompiler
-/// **jette les commentaires** — mais l'annotation est POSITIONNELLE, et les
-/// nœuds portent leur span exact : on relit le source juste avant l'appel. Rien
-/// à ajouter au compilateur, et zéro coût quand il n'y a pas d'annotation (on
-/// ne recule que sur des blancs).
+/// This is the rollup/terser convention: it promises a call has no effect, and
+/// is therefore removable when unused. zcompiler's lexer **discards comments** —
+/// but the annotation is POSITIONAL, and nodes carry their exact span: we re-read
+/// the source right before the call. Nothing to add to the compiler, and zero
+/// cost when there is no annotation (we only walk back over whitespace).
 pub fn hasPureAnnotation(source: []const u8, start: u32) bool {
     var i: usize = start;
-    // Reculer sur les blancs.
+    // Walk back over whitespace.
     while (i > 0 and std.ascii.isWhitespace(source[i - 1])) i -= 1;
-    // Le commentaire doit se terminer juste là.
+    // The comment must end right there.
     if (i < 2 or !std.mem.eql(u8, source[i - 2 .. i], "*/")) return false;
     const open = std.mem.lastIndexOf(u8, source[0 .. i - 2], "/*") orelse return false;
     const inside = source[open + 2 .. i - 2];
@@ -319,7 +317,7 @@ pub fn hasPureAnnotation(source: []const u8, start: u32) bool {
 
 // ------------------------------------------------------------------ tests
 
-/// Analyse un source et rend ses unités (arène libérée par l'appelant).
+/// Analyses a source and returns its units (arena freed by the caller).
 const Probe = struct {
     arena: std.heap.ArenaAllocator,
     list: []Unit,
@@ -328,7 +326,7 @@ const Probe = struct {
     fn deinit(self: *Probe) void {
         self.arena.deinit();
     }
-    /// L'unité qui déclare `name`.
+    /// The unit that declares `name`.
     fn declaring(self: *Probe, name: []const u8) ?Unit {
         for (self.list) |u| {
             for (u.declares) |b| if (std.mem.eql(u8, b.name, name)) return u;
@@ -342,8 +340,8 @@ fn probe(gpa: Allocator, src: []const u8) !Probe {
     const a = arena.allocator();
     const program = (try zc.parser.parse(a, src)).program;
     const sem = zc.semantic.analyze(a, program, src);
-    // En deux temps : sinon l'arène est copiée dans le slot de retour avant que
-    // `units` n'alloue dedans (fuite).
+    // In two steps: otherwise the arena is copied into the return slot before
+    // `units` allocates into it (a leak).
     const list = try units(a, program, src, sem);
     return .{ .arena = arena, .list = list, .src = src };
 }
@@ -353,14 +351,14 @@ fn expectPure(gpa: Allocator, src: []const u8, want: bool) !void {
     defer p.deinit();
     try std.testing.expectEqual(@as(usize, 1), p.list.len);
     if (p.list[0].pure != want) {
-        std.debug.print("\npureté inattendue pour: {s}\n  attendu {}, obtenu {}\n", .{ src, want, p.list[0].pure });
+        std.debug.print("\nunexpected purity for: {s}\n  expected {}, got {}\n", .{ src, want, p.list[0].pure });
         return error.WrongPurity;
     }
 }
 
-test "pur : les declarations qui n'evaluent rien" {
+test "pure: declarations that evaluate nothing" {
     const gpa = std.testing.allocator;
-    try expectPure(gpa, "function f() { console.log('bruyant'); }", true); // le corps n'est pas evalue
+    try expectPure(gpa, "function f() { console.log('bruyant'); }", true); // the body is not evaluated
     try expectPure(gpa, "class C { m() { alert(1); } }", true);
     try expectPure(gpa, "const x = 1;", true);
     try expectPure(gpa, "const s = 'a' + 'b';", true);
@@ -374,7 +372,7 @@ test "pur : les declarations qui n'evaluent rien" {
     try expectPure(gpa, "export const e = 1;", true);
 }
 
-test "impur : tout appel, toute mutation — DANS LE DOUTE, IMPUR" {
+test "impure: any call, any mutation — WHEN IN DOUBT, IMPURE" {
     const gpa = std.testing.allocator;
     try expectPure(gpa, "console.log('hello');", false);
     try expectPure(gpa, "const x = compute();", false);
@@ -383,7 +381,7 @@ test "impur : tout appel, toute mutation — DANS LE DOUTE, IMPUR" {
     try expectPure(gpa, "const t = tag`template`;", false);
     try expectPure(gpa, "globalThis.patched = true;", false);
     try expectPure(gpa, "counter++;", false);
-    try expectPure(gpa, "const x = { [compute()]: 1 };", false); // cle calculee impure
+    try expectPure(gpa, "const x = { [compute()]: 1 };", false); // impure computed key
     try expectPure(gpa, "const x = [1, compute()];", false);
     try expectPure(gpa, "const d = delete obj.prop;", false); // mutation
     try expectPure(gpa, "if (flag) { run(); }", false);
@@ -392,52 +390,52 @@ test "impur : tout appel, toute mutation — DANS LE DOUTE, IMPUR" {
     try expectPure(gpa, "const t = `x${compute()}y`;", false);
 }
 
-test "le piege du getter : un acces membre est IMPUR (getter potentiel)" {
+test "the getter trap: a member access is IMPURE (potential getter)" {
     const gpa = std.testing.allocator;
-    // `obj.prop` peut declencher un getter arbitraire : on ne peut pas savoir.
+    // `obj.prop` may trigger an arbitrary getter: we cannot know.
     try expectPure(gpa, "const config = obj.prop;", false);
     try expectPure(gpa, "const deep = a.b.c;", false);
     try expectPure(gpa, "export default obj.prop;", false);
 }
 
-test "classes : superclasse et champs statiques decident" {
+test "classes: superclass and static fields decide" {
     const gpa = std.testing.allocator;
-    try expectPure(gpa, "class A extends Base {}", true); // lire un identifiant
-    try expectPure(gpa, "class A extends getBase() {}", false); // un appel
+    try expectPure(gpa, "class A extends Base {}", true); // reading an identifier
+    try expectPure(gpa, "class A extends getBase() {}", false); // a call
     try expectPure(gpa, "class A { static x = 1; }", true);
-    try expectPure(gpa, "class A { static x = compute(); }", false); // execute a la definition
-    try expectPure(gpa, "class A { x = compute(); }", true); // champ d'INSTANCE : a `new`, pas ici
-    try expectPure(gpa, "class A { static m() { boot(); } }", true); // methode non appelee
+    try expectPure(gpa, "class A { static x = compute(); }", false); // runs when the class is defined
+    try expectPure(gpa, "class A { x = compute(); }", true); // an INSTANCE field: at `new`, not here
+    try expectPure(gpa, "class A { static m() { boot(); } }", true); // method never called
 }
 
-test "/* @__PURE__ */ rend un appel supprimable" {
+test "/* @__PURE__ */ makes a call removable" {
     const gpa = std.testing.allocator;
     try expectPure(gpa, "const x = /* @__PURE__ */ compute();", true);
-    try expectPure(gpa, "const x = /* #__PURE__ */ compute();", true); // l'autre orthographe
-    try expectPure(gpa, "const x = /*@__PURE__*/ compute();", true); // sans espaces
-    try expectPure(gpa, "const x = /* @__PURE__ */\n  compute();", true); // saut de ligne
-    // Un commentaire quelconque ne promet rien.
+    try expectPure(gpa, "const x = /* #__PURE__ */ compute();", true); // the other spelling
+    try expectPure(gpa, "const x = /*@__PURE__*/ compute();", true); // without spaces
+    try expectPure(gpa, "const x = /* @__PURE__ */\n  compute();", true); // newline
+    // An arbitrary comment promises nothing.
     try expectPure(gpa, "const x = /* juste un commentaire */ compute();", false);
-    // L'annotation ne vaut que pour l'appel qu'elle PRECEDE.
+    // The annotation only applies to the call it PRECEDES.
     try expectPure(gpa, "const x = /* @__PURE__ */ a(), y = b();", false);
 }
 
-test "declares : les noms lies par chaque statement" {
+test "declares: the names bound by each statement" {
     const gpa = std.testing.allocator;
     var p = try probe(gpa, "const { a, b: [c] } = obj; function f() {} class K {} import d from './m';");
     defer p.deinit();
     for ([_][]const u8{ "a", "c", "f", "K", "d" }) |name| {
         if (p.declaring(name) == null) {
-            std.debug.print("\nbinding non declare: {s}\n", .{name});
+            std.debug.print("\nundeclared binding: {s}\n", .{name});
             return error.MissingDeclaration;
         }
     }
-    // `const { a, b: [c] }` est UNE unite qui declare DEUX bindings : la
-    // granularite v0.3 est le statement, les deux vivent ou meurent ensemble.
+    // `const { a, b: [c] }` is ONE unit declaring TWO bindings: granularity is
+    // the statement, so both live or die together.
     try std.testing.expectEqual(@as(usize, 2), p.declaring("a").?.declares.len);
 }
 
-test "uses : les references vers le scope module, pas les locaux" {
+test "uses: references to module scope, not to locals" {
     const gpa = std.testing.allocator;
     var p = try probe(gpa,
         \\const dep = 1;
@@ -449,17 +447,17 @@ test "uses : les references vers le scope module, pas les locaux" {
     try std.testing.expectEqualStrings("dep", u.uses[0].name);
 }
 
-test "uses : se declarer n'est pas s'utiliser (pas d'auto-vie)" {
+test "uses: declaring is not using (no self-liveness)" {
     const gpa = std.testing.allocator;
     var p = try probe(gpa, "const x = 1;");
     defer p.deinit();
     try std.testing.expectEqual(@as(usize, 0), p.list[0].uses.len);
 }
 
-test "uses : la recursion ne cree pas de fausse dependance" {
+test "uses: recursion does not create a false dependency" {
     const gpa = std.testing.allocator;
     var p = try probe(gpa, "function fact(n) { return n <= 1 ? 1 : n * fact(n - 1); }");
     defer p.deinit();
-    // `fact` se reference lui-meme : il DECLARE ce nom, donc ce n'est pas un `use`.
+    // `fact` references itself: it DECLARES that name, so it is not a `use`.
     try std.testing.expectEqual(@as(usize, 0), p.declaring("fact").?.uses.len);
 }

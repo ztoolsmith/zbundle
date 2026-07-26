@@ -1,5 +1,5 @@
-// Live binding : `count` est REASSIGNE. Le scope hoisting le gere
-// NATURELLEMENT (apres fusion, l/importeur reference LA MEME variable).
+// Live binding: `count` is REASSIGNED. Scope hoisting handles it NATURALLY
+// (after merging, the importer references THE SAME variable).
 import { bump, count } from './counter.js';
 bump();
 console.log(count);

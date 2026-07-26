@@ -1,39 +1,38 @@
 name: CI
 
-# Deux jobs, comme zcompiler. L'atout Zig — la cross-compilation depuis Linux —
-# fait tenir toute la logique et 5 des 6 binaires sur `ubuntu-latest`. La seule
-# vraie 2ᵉ plateforme reste Windows, à cause de la libc MSVC que Zig ne fournit
-# pas.
+# Two jobs, like zcompiler. Zig's advantage — cross-compilation from Linux —
+# keeps all the logic and 5 of the 6 binaries on `ubuntu-latest`. The only real
+# second platform is Windows, because of the MSVC libc that Zig does not ship.
 #
-# Différence avec zcompiler : zbundle a DEUX dépendances siblings (zignapi ET
-# zcompiler) — c'est le sommet de la pile de l'org, donc on checkout trois repos.
+# Difference from zcompiler: zbundle has TWO sibling dependencies (zignapi AND
+# zcompiler) — it sits at the top of the stack, so we check out three repos.
 
 on:
   push:
     branches: [main, master]
   pull_request:
-  workflow_call: # réutilisé comme gate par release.yml
+  workflow_call: # reused as a gate by release.yml
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  ZIG_VERSION: 0.16.0 # épinglée = `minimum_zig_version` du build.zig.zon
+  ZIG_VERSION: 0.16.0 # pinned = `minimum_zig_version` from build.zig.zon
 
 jobs:
-  # ── Job principal : toute la logique + cross-compilation, sur Linux ──────────
+  # ── Main job: all the logic + cross-compilation, on Linux ───────────────────
   main:
-    name: Test + juge + cross (Linux)
+    name: Test + judge + cross (Linux)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout zbundle
         uses: actions/checkout@v4
         with:
           path: zbundle
-      # zbundle référence zignapi ET zcompiler en SIBLINGS (chemins ../../../…
-      # dans build.zig.zon). Les deux doivent être là, au bon endroit.
-      # NB : adapter le `repository` (et un PAT si les repos sont privés).
+      # zbundle references zignapi AND zcompiler as SIBLINGS (../../../… paths in
+      # build.zig.zon). Both must be there, in the right place.
+      # NB: adapt `repository` (and add a PAT if the repos are private).
       - name: Checkout zignapi (sibling)
         uses: actions/checkout@v4
         with:
@@ -58,16 +57,16 @@ jobs:
           cache: pnpm
           cache-dependency-path: zbundle/pnpm-lock.yaml
 
-      # zignapi fournit le CLI (`zignapi build`) + le module Zig `zignapi`.
+      # zignapi provides the CLI (`zignapi build`) plus the `zignapi` Zig module.
       - name: Build zignapi (CLI + module)
         working-directory: zignapi
         run: |
           pnpm install --frozen-lockfile=false
           pnpm --filter zignapi build
 
-      # zcompiler fournit le module Zig `zcompiler` (compilé DANS le binaire de
-      # zbundle) et le paquet npm que le playground importe pour ses références
-      # TS/JSX. Son build natif suffit — pas de wasm ici.
+      # zcompiler provides the `zcompiler` Zig module (compiled INTO zbundle's
+      # binary) and the npm package the playground imports for its TS/JSX
+      # references. Its native build is enough — no wasm here.
       - name: Build zcompiler (module + addon)
         working-directory: zcompiler
         run: |
@@ -82,62 +81,62 @@ jobs:
         working-directory: zbundle/packages/zbundle
         run: zig build test
 
-      - name: Build (addon + loader, puis le CLI)
+      - name: Build (addon + loader, then the CLI)
         working-directory: zbundle/packages/zbundle
         run: pnpm build
 
-      - name: node --test (surface JS + CLI)
+      - name: node --test (JS surface + CLI)
         working-directory: zbundle/packages/zbundle
         run: pnpm test
 
-      # Les fixtures de GRAPHE : comparaison stricte à leur expected.json
-      # (modules, arêtes DANS L'ORDRE, externals, cycles).
-      - name: Corpus — fixtures de graphe
+      # The GRAPH fixtures: strict comparison against their expected.json
+      # (modules, edges IN ORDER, externals, cycles).
+      - name: Corpus — graph fixtures
         working-directory: zbundle
         run: node playground/corpus.js --graph corpus/fixtures
 
-      # Les projets-témoins tiers sont gitignorés (convention de l'org) : on les
-      # installe ici pour que le vrai monde soit couvert en CI aussi.
-      - name: Installer les projets-témoins (lodash-es & co)
+      # The third-party real-world projects are gitignored (org convention): we
+      # install them here so the real world is covered in CI too.
+      - name: Install the real-world projects (lodash-es & co)
         working-directory: zbundle/corpus/real
         run: npm install --no-audit --no-fund
 
-      - name: Corpus — projets-témoins (no-crash + stats)
+      - name: Corpus — real-world projects (no crash + stats)
         working-directory: zbundle
         run: node playground/corpus.js --real corpus/real
 
-      # LE JUGE, à chaque commit : pour chaque projet, le bundle s'EXÉCUTE et
-      # doit dire exactement ce que dit l'original ; le code mort est vérifié
-      # ABSENT textuellement ; les exports sont vérifiés par un TÉMOIN-IMPORTEUR ;
-      # et chaque refus v0.2 doit produire une erreur explicative.
-      # `run.mjs` sort en code ≠ 0 sur échec → vrai gate.
-      - name: LE JUGE (playground/run.mjs)
+      # THE JUDGE, on every commit: for each project the bundle is EXECUTED and
+      # must say exactly what the original says; dead code is checked to be
+      # textually ABSENT; exports are checked by an IMPORTING WITNESS; and every
+      # refusal must produce an explanatory error.
+      # `run.mjs` exits non-zero on failure -> a real gate.
+      - name: THE JUDGE (playground/run.mjs)
         working-directory: zbundle
         run: node playground/run.mjs
 
-      # Cross-compilation : les 5 triples non-Windows se produisent depuis Linux.
-      # (Aucun chargement de binaire étranger ici — ça se teste au job Windows
-      #  et à la prod simulée.)
-      - name: Cross-compile tous les triples (artefacts seulement)
+      # Cross-compilation: the 5 non-Windows triples are produced from Linux.
+      # (No foreign binary is loaded here — that is tested by the Windows job and
+      #  by the prod rehearsal.)
+      - name: Cross-compile every triple (artifacts only)
         working-directory: zbundle/packages/zbundle
         run: |
-          pnpm exec zignapi build --all || true # win32-msvc échoue (SDK MSVC absent)
+          pnpm exec zignapi build --all || true # win32-msvc fails (no MSVC SDK)
           for t in darwin-arm64 darwin-x64 linux-x64-gnu linux-x64-musl linux-arm64-gnu; do
-            test -f "npm/$t/zbundle.$t.node" || { echo "::error::npm/$t manquant"; exit 1; }
+            test -f "npm/$t/zbundle.$t.node" || { echo "::error::npm/$t missing"; exit 1; }
           done
-          echo "✓ 5 triples cross-compilés"
+          echo "✓ 5 triples cross-compiled"
 
-      # Prod simulée : npm pack → témoin VIDE → `require("zbundle")` ET la
-      # commande `zbundle` doivent marcher depuis le paquet publié.
-      - name: Prod simulée (le paquet publié démarre-t-il ?)
+      # Prod rehearsal: npm pack -> an EMPTY witness -> `require("zbundle")` AND
+      # the `zbundle` command must both work from the published package.
+      - name: Prod rehearsal (does the published package start?)
         working-directory: zbundle/packages/zbundle
         run: |
           pnpm exec zignapi prepublish
           node scripts/prod-witness.mjs
 
-  # ── Job Windows : la seule vraie 2ᵉ plateforme (libc MSVC) ───────────────────
+  # ── Windows job: the only real second platform (MSVC libc) ──────────────────
   windows:
-    name: Build natif + smoke test (Windows)
+    name: Native build + smoke test (Windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -166,19 +165,19 @@ jobs:
         run: |
           pnpm install --frozen-lockfile=false
           pnpm --filter zignapi build
-      - name: Install zcompiler (module Zig seulement)
+      - name: Install zcompiler (Zig module only)
         working-directory: zcompiler
         run: pnpm install --frozen-lockfile=false
       - name: Install zbundle
         working-directory: zbundle
         run: pnpm install --frozen-lockfile=false
 
-      # Sur windows-latest l'hôte EST win32-x64-msvc → le build natif produit le
-      # .node MSVC directement. Smoke test : on bundle pour de vrai et on vérifie
-      # la sortie (le job principal couvre la logique ; celui-ci le binaire).
-      - name: Build natif win32-x64-msvc
+      # On windows-latest the host IS win32-x64-msvc -> the native build produces
+      # the MSVC .node directly. Smoke test: bundle for real and check the output
+      # (the main job covers the logic; this one covers the binary).
+      - name: Native build win32-x64-msvc
         working-directory: zbundle/packages/zbundle
         run: pnpm build
-      - name: Smoke test (bundler un vrai projet)
+      - name: Smoke test (bundle a real project)
         working-directory: zbundle
         run: node -e "const z=require('./packages/zbundle/index.js'); const c=z.bundle('playground/projects/diamond/main.js'); if(!c.includes('const base = 10')||c.split('const base = 10').length!==2){console.error('KO');process.exit(1)} console.log('OK win32 native')"

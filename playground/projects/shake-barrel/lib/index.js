@@ -1,5 +1,5 @@
-// Le barrel : il re-exporte les 20 modules. Un import d'UN seul nom ne doit
-// tirer QUE lui — c'est tout l'interet du tree-shaking sur les barrels.
+// The barrel: it re-exports all 20 modules. Importing ONE name must pull in
+// ONLY that one — the whole point of tree-shaking on barrels.
 export { keptOne } from './mod1.js';
 export { unused2 } from './mod2.js';
 export { unused3 } from './mod3.js';

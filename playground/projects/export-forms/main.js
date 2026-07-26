@@ -6,9 +6,9 @@
 // expect-call: reexporte(6) -> reexporte 6
 // expect-call: viaStar(7) -> viaStar 7
 //
-// LES FORMES D'EXPORT, toutes exercees de bout en bout par le temoin-importeur.
-// Avant ce projet, aucun projet du playground n'exportait quoi que ce soit :
-// le `export { … }` final du linker n'etait JAMAIS execute par le harnais.
+// THE EXPORT FORMS, all exercised end to end by the importing witness. Before
+// this project, no playground project exported anything at all: the linker's
+// final `export { … }` was NEVER executed by the harness.
 
 import { local } from './dep.js';
 
@@ -21,13 +21,13 @@ export function inline(x) {
 function nomme(x) {
   return `nomme ${x}`;
 }
-// 3. export { a as b } (renomme)
+// 3. export { a as b } (renamed)
 function interne(x) {
   return `renomme ${x}`;
 }
 export { nomme, interne as renomme };
 
-// 4. export default (une expression)
+// 4. export default (an expression)
 export default function (x) {
   return `default ${x}`;
 }

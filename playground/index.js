@@ -1,12 +1,12 @@
-// Bac à sable : construit le graphe d'une entry et l'affiche en arbre indenté
-// + les stats. Le pendant du playground de zcompiler (qui affiche l'AST).
+// Sandbox: builds the graph of an entry and prints it as an indented tree plus
+// statistics. The counterpart of zcompiler's playground (which prints the AST).
 //
-// Usage :
-//   node index.js                                  # les fixtures du corpus
+// Usage:
+//   node index.js                                  # the corpus fixtures
 //   node index.js ../corpus/fixtures/diamond/entry.js
-//   node index.js <entry> --json                   # la structure brute
+//   node index.js <entry> --json                   # the raw structure
 //
-// Prérequis : zbundle buildé (pnpm --filter zbundle build).
+// Requires zbundle to be built (pnpm --filter zbundle build).
 import zbundle from "zbundle";
 import path from "node:path";
 import fs from "node:fs";
@@ -15,7 +15,7 @@ const args = process.argv.slice(2);
 const asJson = args.includes("--json");
 const entries = args.filter((a) => !a.startsWith("--"));
 
-// Sans argument : toutes les fixtures, pour voir d'un coup ce que le graphe sait.
+// Without arguments: every fixture, to see at a glance what the graph knows.
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const fixtures = path.join(HERE, "..", "corpus", "fixtures");
 const targets =
@@ -27,7 +27,7 @@ const targets =
         .map((e) => entryOf(path.join(fixtures, e.name)))
         .filter(Boolean);
 
-// L'entry d'une fixture = le seul fichier nommé `entry.*`.
+// A fixture's entry = the only file named `entry.*`.
 function entryOf(dir) {
   const hit = fs.readdirSync(dir).find((f) => /^entry\./.test(f));
   return hit ? path.join(dir, hit) : null;
@@ -45,5 +45,5 @@ for (const entry of targets) {
   }
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   console.log(out.replace(/^/gm, "  "));
-  console.log(`  (${ms.toFixed(2)} ms aller-retour depuis JS)`);
+  console.log(`  (${ms.toFixed(2)} ms round-trip from JS)`);
 }

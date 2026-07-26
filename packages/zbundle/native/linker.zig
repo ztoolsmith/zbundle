@@ -1,37 +1,37 @@
-//! Le LINKER : N modules → UN fichier de JS exécutable.
+//! The LINKER: N modules -> ONE executable JS file.
 //!
-//! v0.2. Le graphe (v0.1) disait QUI dépend de QUI ; ici on fusionne. La
-//! stratégie est celle de rollup/rolldown — le **scope hoisting** :
+//! The graph said WHO depends on WHOM; here we merge. The strategy is
+//! rollup/rolldown's — **scope hoisting**:
 //!
-//!   > tous les modules sont concaténés dans UN SEUL scope, et les collisions de
-//!   > noms sont résolues par RENOMMAGE.
+//!   > every module is concatenated into a SINGLE scope, and name collisions are
+//!   > resolved by RENAMING.
 //!
-//! Pas de wrappers de fonctions (`__webpack_require__(id)`), pas de registre de
-//! modules à l'exécution : la sortie est du JS plat, lisible, que le moteur
-//! optimise comme du code écrit à la main. C'est possible parce que zcompiler
-//! sait déjà, pour chaque module, quels sont ses bindings top-level, où sont
-//! toutes leurs références, et comment réécrire un nom (`synthetic_text`) — le
-//! mangler faisait exactement ça, à l'échelle d'UN fichier. Le linker fait la
-//! même chose à l'échelle du programme entier.
+//! No function wrappers (`__webpack_require__(id)`), no runtime module registry:
+//! the output is flat, readable JS that the engine optimizes like hand-written
+//! code. This is possible because zcompiler already knows, for each module, its
+//! top-level bindings, where all their references are, and how to rewrite a name
+//! (`synthetic_text`) — the mangler did exactly that at the scale of ONE file.
+//! The linker does the same thing at the scale of the whole program.
 //!
-//! ## La chaîne, de la référence au nom final
+//! ## The chain, from reference to final name
 //!
-//!     référence à `a` dans m.js
+//!     reference to `a` in m.js
 //!       → binding local `a` de m (kind = .import_)
 //!         → ImportEntry { specifier: './x', imported: 'a' }
 //!           → module x, ExportEntry { exported: 'a', … }
-//!             → (.local)      le binding local de x → son NOM FINAL
-//!             → (.re_export)  on recommence chez la source de x
-//!             → (.star_as)    l'objet namespace matérialisé
+//!             -> (.local)      x's local binding -> its FINAL NAME
+//!             -> (.re_export)  start again at x's source
+//!             -> (.star_as)    the materialized namespace object
 //!
-//! Le tour de force : on n'a **rien à réécrire dans le corps des modules**. Il
-//! suffit de poser `new_name` sur le binding importé — puisque toutes ses
-//! références passent par lui, `applyRenames` les met toutes à jour d'un coup.
-//! Un `import` devient littéralement un **alias de nom**.
+//! The neat part: there is **nothing to rewrite inside module bodies**. It is
+//! enough to set `new_name` on the imported binding — since all its references
+//! go through it, `applyRenames` updates them all at once. An `import` literally
+//! becomes a **name alias**.
 //!
-//! ## Ce que la v0.2 REFUSE (plutôt que d'émettre un bundle faux)
+//! ## What the linker REFUSES (rather than emit a wrong bundle)
 //!
-//! Chaque refus est vérifié et porte un message qui dit quoi faire. Cf. `check`.
+//! Every refusal is verified and carries a message that says what to do. See
+//! `check`.
 
 const std = @import("std");
 const zc = @import("zcompiler");
@@ -46,30 +46,30 @@ const ModuleId = graph.ModuleId;
 pub const Error = error{ BundleFailed, OutOfMemory };
 pub const BundleError = struct { message: []const u8 = "" };
 
-/// Le format du fichier produit.
+/// The format of the produced file.
 pub const Format = enum {
-    /// Module ES : les externals restent des `import` en tête, les exports de
-    /// l'entry sortent en `export { … }`. Le défaut, et le seul qui compose.
+    /// ES module: externals stay as `import`s at the top, the entry's exports
+    /// come out as `export { … }`. The default, and the only composable one.
     esm,
-    /// Une IIFE : tout est enfermé dans `(() => { … })()`, rien ne fuit dans le
-    /// scope global. C'est le format d'un `<script>` ou d'un binaire autonome.
-    /// **Exige zéro external** : un `import` est illégal dans une fonction.
+    /// An IIFE: everything is wrapped in `(() => { … })()`, nothing leaks into
+    /// the global scope. The format for a `<script>` or a standalone artifact.
+    /// **Requires zero externals**: an `import` is illegal inside a function.
     iife,
 };
 
 pub const Options = struct { format: Format = .esm };
 
 pub const Stats = struct {
-    /// Modules effectivement ÉMIS (après shaking).
+    /// Modules actually EMITTED (after shaking).
     modules: u32,
-    /// Nombre d'exports de l'entry (0 en `iife` : une IIFE n'exporte rien).
+    /// Number of entry exports (0 in `iife`: an IIFE exports nothing).
     entry_exports: u32,
-    /// Modules du graphe dont plus rien n'a survécu.
+    /// Graph modules of which nothing survived.
     modules_dropped: u32,
     externals: u32,
-    /// Bindings qui ont dû être renommés pour éviter une collision.
+    /// Bindings that had to be renamed to avoid a collision.
     renamed: u32,
-    /// Statements top-level gardés / éliminés par le tree-shaking.
+    /// Top-level statements kept / eliminated by tree-shaking.
     statements_kept: u32,
     statements_dropped: u32,
     input_bytes: u32,
@@ -82,16 +82,16 @@ pub const Bundle = struct {
     stats: Stats,
 };
 
-/// Un statement éliminé par le tree-shaking, avec de quoi le retrouver.
-/// Sert à `inspect.mjs --dead` : comprendre le shaking à l'œil, et déboguer le
-/// jour où quelque chose disparaît à tort.
+/// A statement eliminated by tree-shaking, with enough to find it again.
+/// Used by `inspect.mjs --dead`: understanding the shaking by eye, and debugging
+/// the day something disappears wrongly.
 pub const Dead = struct {
     module: []const u8,
-    /// Ligne dans le module d'origine (1-indexée).
+    /// Line in the original module (1-indexed).
     line: u32,
-    /// Le code éliminé, tronqué et mis sur une ligne.
+    /// The eliminated code, truncated onto a single line.
     snippet: []const u8,
-    /// Pourquoi il est mort.
+    /// Why it died.
     reason: []const u8,
 };
 
@@ -101,7 +101,7 @@ pub const Report = struct {
     dead: []const Dead,
 };
 
-/// Un module, avec tout ce que le linker a appris de lui.
+/// A module, with everything the linker learned about it.
 const Mod = struct {
     id: ModuleId,
     path: []const u8,
@@ -109,19 +109,19 @@ const Mod = struct {
     program: *zc.Node,
     sem: *zc.semantic.Semantic,
     info: zc.semantic.ModuleInfo,
-    /// Les statements top-level, découpés en unités de tree-shaking (v0.3).
+    /// The top-level statements, cut into tree-shaking units.
     units: []shake.Unit = &.{},
-    /// Le nom final du binding fabriqué pour `export default <expression>`.
+    /// The final name of the binding synthesized for `export default <expression>`.
     default_name: ?[]const u8 = null,
-    /// Nom final de l'objet namespace de CE module, s'il en faut un.
+    /// Final name of THIS module's namespace object, if one is needed.
     namespace_name: ?[]const u8 = null,
 };
 
-/// Un import d'external, après dédup. Deux modules qui importent `react` ne
-/// produisent qu'UNE ligne d'import en tête du bundle.
+/// An external import, after deduplication. Two modules importing `react`
+/// produce only ONE import line at the top of the bundle.
 const ExternalImport = struct {
     specifier: []const u8,
-    /// nom importé chez l'external ("default" / "*" / un nom) → nom final local
+    /// name imported from the external ("default" / "*" / a name) -> local final name
     names: std.StringHashMapUnmanaged([]const u8) = .empty,
 };
 
@@ -130,24 +130,24 @@ const Linker = struct {
     err: *BundleError,
     g: graph.Graph,
     mods: []Mod,
-    /// Ordre d'ÉMISSION (post-ordre DFS depuis l'entry) : dépendances d'abord.
+    /// EMISSION order (post-order DFS from the entry): dependencies first.
     order: std.ArrayList(ModuleId) = .empty,
-    /// Tous les noms déjà pris dans le scope du bundle.
+    /// Every name already taken in the bundle's scope.
     used: std.StringHashMapUnmanaged(void) = .empty,
     externals: std.ArrayList(ExternalImport) = .empty,
     by_specifier: std.StringHashMapUnmanaged(u32) = .empty,
     renamed: u32 = 0,
 
-    // --- état du marquage (v0.3) ---
-    /// Les bindings atteignables depuis les racines.
+    // --- mark-phase state ---
+    /// The bindings reachable from the roots.
     live: std.AutoHashMapUnmanaged(*zc.semantic.Binding, void) = .empty,
-    /// File du point fixe.
+    /// Fixed-point work queue.
     queue: std.ArrayList(BindingRef) = .empty,
-    /// Par module : binding → index de l'unité qui le déclare.
+    /// Per module: binding -> index of the unit that declares it.
     decl_unit: []std.AutoHashMapUnmanaged(*zc.semantic.Binding, u32) = &.{},
-    /// Par module : binding d'import → son `ImportEntry` (pour suivre la chaîne).
+    /// Per module: import binding -> its `ImportEntry` (to follow the chain).
     import_of: []std.AutoHashMapUnmanaged(*zc.semantic.Binding, zc.semantic.ImportEntry) = &.{},
-    /// Statistiques de shaking.
+    /// Shaking statistics.
     units_total: u32 = 0,
     units_alive: u32 = 0,
     opts: Options = .{},
@@ -158,7 +158,7 @@ const Linker = struct {
         return error.BundleFailed;
     }
 
-    /// Le module cible d'un specifier depuis `from`, ou null s'il est external.
+    /// The target module of a specifier from `from`, or null when external.
     fn targetOf(self: *Linker, from: ModuleId, specifier: []const u8) ?ModuleId {
         for (self.g.edges) |e| {
             if (e.from == from and std.mem.eql(u8, e.specifier, specifier)) return e.to;
@@ -173,25 +173,25 @@ const Linker = struct {
         return false;
     }
 
-    // ---- 1. l'ordre d'émission ----
+    // ---- 1. emission order ----
 
-    /// Post-ordre DFS depuis l'entry : un module est émis APRÈS toutes ses
-    /// dépendances. Itératif (une vraie base de code a des chaînes de centaines
-    /// de modules — cf. le Tarjan de graph.zig, même raison).
+    /// Post-order DFS from the entry: a module is emitted AFTER all of its
+    /// dependencies. Iterative (a real codebase has chains of hundreds of
+    /// modules — same reason as graph.zig's Tarjan).
     ///
-    /// **Les cycles** : une arête qui revient sur un module déjà en cours de
-    /// visite est simplement ignorée, donc les membres d'un cycle sortent dans
-    /// l'ordre de première visite. C'est l'approximation de rollup. Elle est
-    /// FAUSSE pour les TDZ inter-cycle pathologiques (un module qui LIT au
-    /// top-level une `const` d'un module du même cycle émis après lui) — assumé
-    /// et documenté : le vrai code n'y vit pas, et rollup ne fait pas mieux.
+    /// **Cycles**: an edge returning to a module currently being visited is
+    /// simply ignored, so cycle members come out in first-visit order. That is
+    /// rollup's approximation. It is WRONG for pathological inter-cycle TDZ
+    /// cases (a module that READS at top level a `const` from a module of the
+    /// same cycle emitted after it) — accepted and documented: real code does
+    /// not live there, and rollup does no better.
     fn computeOrder(self: *Linker) Error!void {
         const n = self.mods.len;
         const State = enum { white, gray, black };
         const state = try self.a.alloc(State, n);
         @memset(state, .white);
 
-        // Arêtes sortantes (index dans g.edges) par module, dans l'ordre source.
+        // Outgoing edges (indices into g.edges) per module, in source order.
         const deps = try self.outgoing();
 
         const Frame = struct { m: ModuleId, i: usize };
@@ -208,22 +208,22 @@ const Linker = struct {
                     state[to] = .gray;
                     try stack.append(self.a, .{ .m = to, .i = 0 });
                 }
-                continue; // .gray = arête de retour (cycle) ; .black = déjà émis
+                continue; // .gray = back edge (cycle); .black = already emitted
             }
             state[top.m] = .black;
             try self.order.append(self.a, top.m);
             _ = stack.pop();
         }
 
-        // Un module inatteignable depuis l'entry ne devrait pas exister (le
-        // graphe part de l'entry), mais on ne perd rien en silence.
+        // A module unreachable from the entry should not exist (the graph starts
+        // at the entry), but we never lose anything silently.
         for (0..n) |i| if (state[i] != .black) {
             try self.order.append(self.a, @intCast(i));
         };
     }
 
-    /// Pour chaque module, ses dépendances INTERNES, dans l'ordre source, sans
-    /// doublon (le diamant ne visite `d` qu'une fois).
+    /// For each module, its INTERNAL dependencies, in source order, without
+    /// duplicates (the diamond visits `d` only once).
     fn outgoing(self: *Linker) Error![]const []const ModuleId {
         const out = try self.a.alloc([]ModuleId, self.mods.len);
         for (out, 0..) |*slot, m| {
@@ -240,76 +240,76 @@ const Linker = struct {
         return @ptrCast(out);
     }
 
-    // ---- 2. les refus (avant tout travail : un message clair, pas un faux bundle) ----
+    // ---- 2. refusals (before any work: a clear message, not a wrong bundle) ----
 
     fn check(self: *Linker) Error!void {
         for (self.mods) |m| {
             const rel = self.display(m.path);
             if (m.info.has_top_level_await) {
                 return self.fail(
-                    "top-level await n'est pas supporte en v0.2 ({s})\n" ++
-                        "  Le scope hoisting concatene les modules dans un seul scope : un `await`\n" ++
-                        "  top-level rendrait le bundle entier asynchrone. Deplacez-le dans une\n" ++
-                        "  fonction async, ou attendez la v0.3.",
+                    "top-level await is not supported ({s})\n" ++
+                        "  Scope hoisting merges every module into a single scope: a top-level\n" ++
+                        "  `await` would make the whole bundle asynchronous. Move it inside an\n" ++
+                        "  async function.",
                     .{rel},
                 );
             }
             if (m.info.has_import_meta) {
                 return self.fail(
-                    "import.meta n'est pas supporte en v0.2 ({s})\n" ++
-                        "  Sa valeur depend de l'URL du module, qui n'existe plus une fois les\n" ++
-                        "  modules fusionnes en un seul fichier.",
+                    "import.meta is not supported ({s})\n" ++
+                        "  Its value depends on the module URL, which no longer exists once the\n" ++
+                        "  modules are merged into a single file.",
                     .{rel},
                 );
             }
         }
-        // `import()` vers un module INTERNE : ce serait un chunk séparé.
+        // `import()` of an INTERNAL module: that would be a separate chunk.
         for (self.g.edges) |e| {
             if (!e.is_dynamic) continue;
-            const to = e.to orelse continue; // dynamique vers un external : OK, réémis tel quel
+            const to = e.to orelse continue; // dynamic toward an external: fine, re-emitted as is
             return self.fail(
-                "import() dynamique vers un module interne non supporte en v0.2 : '{s}'\n" ++
+                "dynamic import() of an internal module is not supported: '{s}'\n" ++
                     "  ({s} -> {s})\n" ++
-                    "  Un import dynamique interne demande un CHUNK separe : c'est le\n" ++
-                    "  code-splitting, prevu en v0.5. Rendez l'import statique, ou marquez la\n" ++
-                    "  cible comme externe.",
+                    "  An internal dynamic import needs a separate CHUNK: that is\n" ++
+                    "  code-splitting, planned for later. Make the import static, or mark the\n" ++
+                    "  target as external.",
                 .{ e.specifier, self.display(self.mods[e.from].path), self.display(self.mods[to].path) },
             );
         }
     }
 
-    /// LE cas où le scope hoisting ne peut PAS reproduire la sémantique ESM.
+    /// THE case where scope hoisting CANNOT reproduce ESM semantics.
     ///
-    /// Un **live binding** (`export let n` réassigné) marche naturellement quand
-    /// il est importé nommément : après fusion, l'importeur référence LA MÊME
-    /// variable, donc il voit les mises à jour. Vérifié — c'est gratuit.
+    /// A **live binding** (a reassigned `export let n`) works naturally when
+    /// imported by name: after merging, the importer references THE SAME
+    /// variable, so it sees the updates. Verified — and free.
     ///
-    /// Mais un **objet namespace** (`import * as ns`) est matérialisé une fois,
-    /// à la construction : `{ n: n }` fige la VALEUR. En ESM natif, `ns.n` reste
-    /// vivant. Là, et seulement là, le bundle mentirait — donc on refuse.
+    /// But a **namespace object** (`import * as ns`) is materialized once, at
+    /// construction: `{ n: n }` freezes the VALUE. In native ESM, `ns.n` stays
+    /// live. There, and only there, the bundle would lie — so we refuse.
     ///
-    /// (Se lance APRÈS `linkImports`, quand on sait quels namespaces existent.)
+    /// (Runs AFTER `linkImports`, once we know which namespaces exist.)
     fn checkNamespaceSnapshots(self: *Linker) Error!void {
         for (self.mods) |m| {
             if (m.namespace_name == null) continue;
             var seen: std.StringHashMapUnmanaged(void) = .empty;
             if (try self.findAssigned(m.id, &seen, 0)) |b| {
                 return self.fail(
-                    "live binding expose via un objet namespace : `{s}` dans {s}\n" ++
-                        "  `{s}` est REASSIGNE apres son initialisation, et son module est importe\n" ++
-                        "  avec `import * as ns` (ou re-exporte en `export * as ns`). L'objet\n" ++
-                        "  namespace est construit UNE fois : il figerait la valeur, alors qu'en\n" ++
-                        "  ESM `ns.{s}` reste vivant.\n" ++
-                        "  Importez le nom directement (`import {{ {s} }} from …`) — la, le scope\n" ++
-                        "  hoisting preserve le live binding — ou exportez une fonction accesseur.",
+                    "live binding exposed through a namespace object: `{s}` in {s}\n" ++
+                        "  `{s}` is REASSIGNED after initialization, and its module is imported\n" ++
+                        "  with `import * as ns` (or re-exported as `export * as ns`). The\n" ++
+                        "  namespace object is built ONCE: it would freeze the value, whereas in\n" ++
+                        "  ESM `ns.{s}` stays live.\n" ++
+                        "  Import the name directly (`import {{ {s} }} from …`) — there, scope\n" ++
+                        "  hoisting preserves the live binding — or export an accessor function.",
                     .{ b.name, self.display(m.path), b.name, b.name, b.name },
                 );
             }
         }
     }
 
-    /// Le premier binding RÉASSIGNÉ atteignable parmi les exports d'un module
-    /// (les siens et ceux de ses `export *`).
+    /// The first REASSIGNED binding reachable among a module's exports (its own
+    /// and those of its `export *`).
     fn findAssigned(
         self: *Linker,
         mod: ModuleId,
@@ -340,10 +340,10 @@ const Linker = struct {
         return null;
     }
 
-    // ---- 3. l'attribution des noms ----
+    // ---- 3. name assignment ----
 
-    /// Un nom libre dans le scope du bundle. `base` s'il est disponible, sinon
-    /// `base$1`, `base$2`… (la convention rollup — lisible, et `$` est légal).
+    /// A free name in the bundle's scope. `base` when available, otherwise
+    /// `base$1`, `base$2`… (rollup's convention — readable, and `$` is legal).
     fn unique(self: *Linker, base: []const u8) Error![]const u8 {
         if (!self.used.contains(base)) {
             try self.used.put(self.a, base, {});
@@ -360,10 +360,10 @@ const Linker = struct {
         }
     }
 
-    /// Réserve les noms intouchables : mots réservés + tous les noms NON RÉSOLUS
-    /// de tous les modules (les globals — `console`, `process`, `Math`…). Sans
-    /// ça, un binding local pourrait être renommé en `console` et capturer le
-    /// global. Même garde-fou que le mangler, à l'échelle du bundle.
+    /// Reserves untouchable names: reserved words plus every UNRESOLVED name
+    /// from every module (the globals — `console`, `process`, `Math`…). Without
+    /// this, a local binding could be renamed to `console` and capture the
+    /// global. Same guard as the mangler, at bundle scale.
     fn reserveNames(self: *Linker) Error!void {
         for (RESERVED) |kw| try self.used.put(self.a, kw, {});
         for (self.mods) |m| {
@@ -372,31 +372,31 @@ const Linker = struct {
         }
     }
 
-    /// Donne son nom final à chaque binding top-level de chaque module, dans
-    /// l'ordre d'émission (les premiers gardent leur nom : le bundle reste
-    /// lisible, et l'entry — la partie qu'on lit le plus — est nommée en dernier
-    /// donc peut être suffixée ; c'est le compromis de rollup).
+    /// Gives its final name to every top-level binding of every module, in
+    /// emission order (the first ones keep their name: the bundle stays readable,
+    /// and the entry — the part read most — is named last so it may get a suffix;
+    /// that is rollup's trade-off).
     ///
-    /// Les bindings d'IMPORT sont sautés : ce sont des alias, ils recevront le
-    /// nom de leur source à l'étape de résolution.
+    /// IMPORT bindings are skipped: they are aliases, and will receive their
+    /// source's name during the resolution step.
     fn assignNames(self: *Linker) Error!void {
         for (self.order.items) |id| {
             const m = &self.mods[id];
             var list: std.ArrayList(*zc.semantic.Binding) = .empty;
             var it = m.info.module_scope.bindings.valueIterator();
             while (it.next()) |b| try list.append(self.a, b.*);
-            // Ordre de déclaration : déterminisme (une map n'a pas d'ordre).
+            // Declaration order: determinism (a map has no order).
             std.mem.sort(*zc.semantic.Binding, list.items, {}, byDecl);
             for (list.items) |b| {
-                if (b.kind == .import_) continue; // alias : résolu plus tard
-                // Un binding MORT ne consomme pas de nom : sinon un `helper`
-                // éliminé forcerait le `helper` vivant d'un autre module à
-                // devenir `helper$1`, pour rien.
+                if (b.kind == .import_) continue; // alias: resolved later
+                // A DEAD binding does not consume a name: otherwise an
+                // eliminated `helper` would push another module's live `helper`
+                // to `helper$1`, for nothing.
                 if (!self.live.contains(b)) continue;
                 const final = try self.unique(b.name);
                 if (!std.mem.eql(u8, final, b.name)) b.new_name = final;
             }
-            // `export default <expression>` : pas de binding, on en fabrique un.
+            // `export default <expression>`: no binding, so we synthesize one.
             for (m.info.exports) |e| {
                 if (e.kind != .default_expr) continue;
                 if (!self.defaultAlive(m.id)) continue;
@@ -405,12 +405,12 @@ const Linker = struct {
         }
     }
 
-    /// Le nom final d'un binding : son `new_name` s'il a été renommé, sinon le sien.
+    /// A binding's final name: its `new_name` if renamed, otherwise its own.
     fn finalOf(_: *Linker, b: *zc.semantic.Binding) []const u8 {
         return b.currentName();
     }
 
-    /// L'unité `export default <expr>` de ce module a-t-elle survécu ?
+    /// Did this module's `export default <expr>` unit survive?
     fn defaultAlive(self: *Linker, mod: ModuleId) bool {
         for (self.mods[mod].units) |u| {
             if (u.stmt.kind == .export_default_declaration and u.alive) return true;
@@ -418,31 +418,31 @@ const Linker = struct {
         return false;
     }
 
-    // ---- 3bis. LE MARQUAGE (v0.3) : qu'est-ce qui est ATTEIGNABLE ? ----
+    // ---- 3b. THE MARK PHASE: what is REACHABLE? ----
 
-    /// Marque tout ce qui est vivant, par point fixe. Ce qui reste mort ne sera
-    /// jamais émis.
+    /// Marks everything that is live, by fixed point. Whatever stays dead is
+    /// never emitted.
     ///
     /// **Les racines** (deux familles, et seulement deux) :
-    ///   1. **Tout statement top-level IMPUR de tout module du graphe.** Un
-    ///      module présent dans le graphe SERA évalué à l'exécution (ESM évalue
-    ///      chaque module importé) : ses effets de bord doivent survivre, même
-    ///      si personne n'utilise ce qu'il exporte. C'est ce qui fait marcher
-    ///      `import './polyfill'`.
-    ///   2. **Les exports de l'ENTRY.** C'est le contrat du bundle avec
-    ///      l'extérieur.
+    ///   1. **Every IMPURE top-level statement of every module in the graph.** A
+    ///      module present in the graph WILL be evaluated at runtime (ESM
+    ///      evaluates each imported module): its side effects must survive, even
+    ///      if nobody uses what it exports. That is what makes
+    ///      `import './polyfill'` work.
+    ///   2. **The ENTRY's exports.** That is the bundle's contract with the
+    ///      outside world.
     ///
-    /// **La propagation** : une unité vivante rend vivants les bindings qu'elle
-    /// utilise → chaque binding vivant rend vivante l'unité qui le déclare → et
-    /// on recommence. Le corps d'une fonction vivante tire donc ce qu'il touche,
-    /// transitivement. Worklist explicite, pas de récursion : lodash, c'est 172
-    /// modules et des milliers d'unités.
+    /// **Propagation**: a live unit makes the bindings it uses live -> each live
+    /// binding makes the unit declaring it live -> and around again. The body of
+    /// a live function therefore pulls in what it touches, transitively.
+    /// Explicit worklist, no recursion: lodash is 172 modules and thousands of
+    /// units.
     ///
-    /// **Les chaînes d'import** sont traversées par `resolveTarget` : importer
-    /// `a` de `x` ne marque QUE le binding `a` de `x`, pas tout `x`. C'est
-    /// précisément le gain du tree-shaking sur les barrels.
+    /// **Import chains** are traversed by `resolveTarget`: importing `a` from
+    /// `x` marks ONLY `x`'s `a` binding, not all of `x`. That is precisely where
+    /// tree-shaking pays off on barrels.
     fn mark(self: *Linker) Error!void {
-        // Index : quel binding est déclaré par quelle unité (par module).
+        // Index: which binding is declared by which unit (per module).
         self.decl_unit = try self.a.alloc(std.AutoHashMapUnmanaged(*zc.semantic.Binding, u32), self.mods.len);
         self.import_of = try self.a.alloc(std.AutoHashMapUnmanaged(*zc.semantic.Binding, zc.semantic.ImportEntry), self.mods.len);
         for (self.mods, 0..) |*m, i| {
@@ -456,13 +456,13 @@ const Linker = struct {
             }
         }
 
-        // Racine 1 : les effets de bord de chaque module du graphe.
+        // Root 1: the side effects of every module in the graph.
         for (self.mods, 0..) |*m, i| {
             for (m.units, 0..) |u, ui| {
                 if (!u.pure) try self.markUnit(@intCast(i), @intCast(ui));
             }
         }
-        // Racine 2 : ce que l'entry expose au monde.
+        // Root 2: what the entry exposes to the world.
         var seen: std.StringHashMapUnmanaged(void) = .empty;
         var names: std.ArrayList([]const u8) = .empty;
         try self.exportNames(self.g.entry, &names, &seen, 0);
@@ -473,7 +473,7 @@ const Linker = struct {
         try self.drain();
     }
 
-    /// Rend une unité vivante et met ses dépendances en file.
+    /// Makes a unit live and queues its dependencies.
     fn markUnit(self: *Linker, mod: ModuleId, idx: u32) Error!void {
         const u = &self.mods[mod].units[idx];
         if (u.alive) return;
@@ -486,22 +486,22 @@ const Linker = struct {
             .binding => |x| try self.queue.append(self.a, .{ .mod = x.mod, .b = x.b }),
             .default_expr => |mod| try self.markDefaultUnit(mod),
             .namespace => |mod| try self.markNamespace(mod, 0),
-            // Un external vivant : on note qu'il faudra l'importer (cf. `emit`).
+            // A live external: record that it will need importing (see `emit`).
             .external => |x| _ = try self.externalName(x.specifier, x.imported, x.kind),
         }
     }
 
-    /// `export default <expression>` n'a pas de binding : on marque directement
-    /// le statement qui le porte.
+    /// `export default <expression>` has no binding: we mark the statement
+    /// carrying it directly.
     fn markDefaultUnit(self: *Linker, mod: ModuleId) Error!void {
         for (self.mods[mod].units, 0..) |u, ui| {
             if (u.stmt.kind == .export_default_declaration) try self.markUnit(mod, @intCast(ui));
         }
     }
 
-    /// Un objet namespace expose TOUT : il rend vivant chaque export du module.
-    /// C'est le prix d'un `import * as ns` — et la raison pour laquelle il vaut
-    /// mieux importer les noms un par un quand on veut du shaking.
+    /// A namespace object exposes EVERYTHING: it makes every export of the
+    /// module live. That is the price of an `import * as ns` — and the reason to
+    /// import names one by one when you want shaking.
     fn markNamespace(self: *Linker, mod: ModuleId, depth: u32) Error!void {
         if (depth > 32) return;
         var seen: std.StringHashMapUnmanaged(void) = .empty;
@@ -509,8 +509,8 @@ const Linker = struct {
         try self.exportNames(mod, &names, &seen, 0);
         for (names.items) |name| {
             if (try self.resolveTarget(mod, name, 0)) |t| {
-                // Pas de `markTarget` récursif sur un namespace imbriqué : on
-                // passe par la file pour les bindings, et on borne la profondeur.
+                // No recursive `markTarget` on a nested namespace: bindings go
+                // through the queue, and depth is bounded.
                 switch (t) {
                     .namespace => |inner| if (inner != mod) try self.markNamespace(inner, depth + 1),
                     else => try self.markTarget(t),
@@ -519,13 +519,13 @@ const Linker = struct {
         }
     }
 
-    /// Vide la file jusqu'au point fixe.
+    /// Drains the queue to the fixed point.
     fn drain(self: *Linker) Error!void {
         while (self.queue.pop()) |ref| {
             const gop = try self.live.getOrPut(self.a, ref.b);
             if (gop.found_existing) continue;
 
-            // Un binding d'IMPORT est un alias : ce qui vit, c'est sa source.
+            // An IMPORT binding is an alias: what lives is its source.
             if (self.import_of[ref.mod].get(ref.b)) |imp| {
                 if (self.isExternal(ref.mod, imp.specifier)) {
                     _ = try self.externalName(imp.specifier, imp.imported, imp.kind);
@@ -539,12 +539,12 @@ const Linker = struct {
                 }
                 continue;
             }
-            // Un binding normal : l'unité qui le déclare doit vivre.
+            // A normal binding: the unit declaring it must live.
             if (self.decl_unit[ref.mod].get(ref.b)) |ui| try self.markUnit(ref.mod, ui);
         }
     }
 
-    /// Tous les noms exportés par un module (les siens + ceux traversés par
+    /// Every name exported by a module (its own plus those traversed through
     /// `export *`).
     fn exportNames(
         self: *Linker,
@@ -566,8 +566,8 @@ const Linker = struct {
         }
     }
 
-    /// Un module a-t-il au moins une unité vivante ? Sinon il disparaît du
-    /// bundle — en-tête compris.
+    /// Does a module have at least one live unit? Otherwise it vanishes from the
+    /// bundle — header comment included.
     fn moduleAlive(self: *Linker, mod: ModuleId) bool {
         for (self.mods[mod].units) |u| {
             if (u.alive) return true;
@@ -575,27 +575,27 @@ const Linker = struct {
         return false;
     }
 
-    // ---- 4. la résolution des imports (LE cœur) ----
+    // ---- 4. import resolution (THE core) ----
 
-    /// Ce que désigne VRAIMENT un nom exporté, une fois la chaîne suivie.
+    /// What an exported name REALLY designates, once the chain is followed.
     ///
-    /// Structurel, pas textuel : le marquage (v0.3) a besoin de savoir QUEL
-    /// binding vit, bien avant que les noms finaux n'existent. `nameOf` en tire
-    /// le texte au moment de l'émission.
+    /// Structural, not textual: the mark phase needs to know WHICH binding is
+    /// live, long before final names exist. `nameOf` derives the text from it at
+    /// emission time.
     const Target = union(enum) {
-        /// Un binding réel, dans un module donné.
+        /// A real binding, in a given module.
         binding: struct { mod: ModuleId, b: *zc.semantic.Binding },
-        /// Le `const <mod>_default = …` fabriqué pour un `export default <expr>`.
+        /// The `const <mod>_default = …` synthesized for an `export default <expr>`.
         default_expr: ModuleId,
-        /// L'objet namespace d'un module.
+        /// A module's namespace object.
         namespace: ModuleId,
-        /// Un nom venu d'un external : la clé (specifier, imported, kind).
+        /// A name coming from an external: the key (specifier, imported, kind).
         external: struct { specifier: []const u8, imported: []const u8, kind: zc.semantic.ImportKind },
     };
 
-    /// Suit la chaîne d'exports de `mod` pour `name`. `null` = pas exporté.
+    /// Follows `mod`'s export chain for `name`. `null` = not exported.
     fn resolveTarget(self: *Linker, mod: ModuleId, name: []const u8, depth: u32) Error!?Target {
-        if (depth > 32) return self.fail("chaine de re-export trop profonde pour '{s}'", .{name});
+        if (depth > 32) return self.fail("re-export chain too deep for '{s}'", .{name});
         const m = &self.mods[mod];
         for (m.info.exports) |e| {
             if (!std.mem.eql(u8, e.exported, name)) continue;
@@ -615,17 +615,17 @@ const Linker = struct {
                 },
             }
         }
-        // `export * from './x'` : le nom vient peut-être d'une des sources.
+        // `export * from './x'`: the name may come from one of the sources.
         for (m.info.star_exports) |spec| {
-            if (self.isExternal(mod, spec)) continue; // impossible à énumérer
+            if (self.isExternal(mod, spec)) continue; // impossible to enumerate
             const to = self.targetOf(mod, spec) orelse continue;
             if (try self.resolveTarget(to, name, depth + 1)) |hit| return hit;
         }
         return null;
     }
 
-    /// Le nom final d'une cible. N'est appelé qu'à l'émission, quand tous les
-    /// noms sont attribués.
+    /// A target's final name. Only called at emission, once all names are
+    /// assigned.
     fn nameOf(self: *Linker, t: Target) Error![]const u8 {
         return switch (t) {
             .binding => |x| self.finalOf(x.b),
@@ -635,14 +635,14 @@ const Linker = struct {
         };
     }
 
-    /// Le nom final, dans le bundle, de `name` tel qu'exporté par `mod`.
+    /// The final name, in the bundle, of `name` as exported by `mod`.
     fn resolveExport(self: *Linker, mod: ModuleId, name: []const u8, depth: u32) Error!?[]const u8 {
         const t = (try self.resolveTarget(mod, name, depth)) orelse return null;
         return try self.nameOf(t);
     }
 
-    /// Tous les noms exportés d'un module (les siens + ceux de ses `export *`),
-    /// avec leur nom final. Sert à matérialiser un objet namespace.
+    /// Every exported name of a module (its own plus those of its `export *`),
+    /// with their final name. Used to materialize a namespace object.
     fn collectExports(
         self: *Linker,
         mod: ModuleId,
@@ -664,25 +664,26 @@ const Linker = struct {
         }
     }
 
-    /// Résout chaque import : le binding local reçoit le nom FINAL de sa source.
-    /// C'est tout le linking — après ça, plus aucun `import` n'a de raison d'être.
+    /// Resolves each import: the local binding receives its source's FINAL name.
+    /// That is the whole of linking — after this, no `import` has any reason to
+    /// exist.
     fn linkImports(self: *Linker) Error!void {
-        // Les namespaces d'abord : un `import * as ns` doit avoir son nom avant
-        // qu'un autre module ne le référence.
-        // PAS de filtre `moduleAlive` ici : un barrel PUR (que des re-exports)
-        // n'a aucune unité vivante — il n'émet rien — mais ses déclarations
-        // pilotent quand même la RÉSOLUTION. Le filtrage se fait sur les
-        // bindings (`live`) et sur `namespaceNeeded`, pas sur le module.
+        // Namespaces first: an `import * as ns` must have its name before any
+        // other module references it.
+        // NO `moduleAlive` filter here: a PURE barrel (nothing but re-exports)
+        // has no live unit — it emits nothing — yet its declarations still drive
+        // RESOLUTION. Filtering happens on bindings (`live`) and on
+        // `namespaceNeeded`, not on the module.
         for (self.order.items) |id| {
             for (self.mods[id].info.imports) |imp| {
                 if (imp.kind != .namespace) continue;
-                // Un import mort ne matérialise rien (v0.3).
+                // A dead import materializes nothing.
                 if (imp.binding) |b| if (!self.live.contains(b)) continue;
                 if (self.isExternal(id, imp.specifier)) continue;
                 const to = self.targetOf(id, imp.specifier) orelse continue;
                 try self.ensureNamespace(to);
             }
-            // `export * as ns from './x'` matérialise aussi le namespace de x.
+            // `export * as ns from './x'` also materializes x's namespace.
             for (self.mods[id].info.exports) |e| {
                 if (e.kind != .star_as) continue;
                 if (self.isExternal(id, e.specifier)) continue;
@@ -696,10 +697,10 @@ const Linker = struct {
             const m = &self.mods[id];
             for (m.info.imports) |imp| {
                 const b = imp.binding orelse continue;
-                if (!self.live.contains(b)) continue; // import mort : rien à lier
+                if (!self.live.contains(b)) continue; // dead import: nothing to link
                 const final = try self.resolveImport(id, imp);
-                // LE geste du linker : le binding importé devient un ALIAS du nom
-                // source. Toutes ses références suivent (via `applyRenames`).
+                // THE linker's move: the imported binding becomes an ALIAS of the
+                // source name. All its references follow (via `applyRenames`).
                 if (!std.mem.eql(u8, final, b.name)) b.new_name = final;
             }
         }
@@ -710,19 +711,19 @@ const Linker = struct {
             return self.externalName(imp.specifier, imp.imported, imp.kind);
         }
         const to = self.targetOf(from, imp.specifier) orelse
-            return self.fail("dependance non resolue '{s}' depuis {s}", .{ imp.specifier, self.display(self.mods[from].path) });
+            return self.fail("unresolved dependency '{s}' from {s}", .{ imp.specifier, self.display(self.mods[from].path) });
         switch (imp.kind) {
             .namespace => return self.mods[to].namespace_name.?,
             .default => return (try self.resolveExport(to, "default", 0)) orelse
-                self.fail("{s} n'a pas d'export par defaut (importe par {s})", .{ self.display(self.mods[to].path), self.display(self.mods[from].path) }),
+                self.fail("{s} has no default export (imported by {s})", .{ self.display(self.mods[to].path), self.display(self.mods[from].path) }),
             .named => return (try self.resolveExport(to, imp.imported, 0)) orelse
-                self.fail("{s} n'exporte pas '{s}' (importe par {s})", .{ self.display(self.mods[to].path), imp.imported, self.display(self.mods[from].path) }),
+                self.fail("{s} does not export '{s}' (imported by {s})", .{ self.display(self.mods[to].path), imp.imported, self.display(self.mods[from].path) }),
         }
     }
 
-    /// Un `export * as ns from './x'` de `mod` est-il réellement consommé ?
-    /// (Soit parce que `mod` est l'entry — c'est un export public —, soit parce
-    /// qu'un module vivant importe ce nom.)
+    /// Is a `export * as ns from './x'` of `mod` actually consumed? (Either
+    /// because `mod` is the entry — it is then a public export — or because a
+    /// live module imports that name.)
     fn namespaceNeeded(self: *Linker, mod: ModuleId, exported: []const u8) bool {
         if (mod == self.g.entry) return true;
         for (self.mods, 0..) |*other, oi| {
@@ -747,8 +748,8 @@ const Linker = struct {
         );
     }
 
-    /// Le nom local d'un nom importé depuis un external, dédupliqué : deux
-    /// modules qui importent `useState` de `react` partagent le même.
+    /// The local name of a name imported from an external, deduplicated: two
+    /// modules importing `useState` from `react` share the same one.
     fn externalName(self: *Linker, specifier: []const u8, imported: []const u8, kind: zc.semantic.ImportKind) Error![]const u8 {
         const key = switch (kind) {
             .default => "default",
@@ -772,28 +773,28 @@ const Linker = struct {
         return final;
     }
 
-    // ---- 5. l'émission ----
+    // ---- 5. emission ----
 
     fn emit(self: *Linker, out: *std.ArrayList(u8)) Error!void {
         const iife = self.opts.format == .iife;
         try out.appendSlice(self.a, if (iife)
-            "// Genere par zbundle — IIFE, un seul fichier.\n"
+            "// Generated by zbundle — IIFE, single file.\n"
         else
-            "// Genere par zbundle — format ESM, un seul fichier.\n");
+            "// Generated by zbundle — ESM, single file.\n");
 
-        // Une IIFE ne peut PAS porter d'`import` : un module externe n'a nulle
-        // part où aller. On le dit, plutôt que d'émettre du JS invalide.
+        // An IIFE CANNOT carry an `import`: an external module has nowhere to
+        // go. We say so, rather than emit invalid JS.
         if (iife and self.externals.items.len > 0) {
             return self.fail(
-                "--format iife est incompatible avec des imports externes ({d})\n" ++
-                    "  Le premier : '{s}'. Une IIFE enferme tout dans une fonction, or un\n" ++
-                    "  `import` n'est legal qu'au top-level d'un module.\n" ++
-                    "  Utilisez --format esm, ou rendez ces dependances internes.",
+                "--format iife is incompatible with external imports ({d})\n" ++
+                    "  The first one: '{s}'. An IIFE wraps everything in a function, and an\n" ++
+                    "  `import` is only legal at a module's top level.\n" ++
+                    "  Use --format esm, or make those dependencies internal.",
                 .{ self.externals.items.len, self.externals.items[0].specifier },
             );
         }
 
-        // Les externals EN TÊTE, dédupliqués et fusionnés.
+        // Externals AT THE TOP, deduplicated and merged.
         for (self.externals.items) |ext| try self.emitExternalImport(ext, out);
         if (self.externals.items.len > 0) try out.append(self.a, '\n');
 
@@ -801,8 +802,8 @@ const Linker = struct {
 
         for (self.order.items) |id| {
             const m = &self.mods[id];
-            // Un module dont aucune unité n'a survécu disparaît ENTIÈREMENT,
-            // en-tête compris : il n'a plus rien à dire.
+            // A module of which no unit survived disappears ENTIRELY, header
+            // comment included: it has nothing left to say.
             if (!self.moduleAlive(id)) continue;
             try out.appendSlice(self.a, try std.fmt.allocPrint(
                 self.a,
@@ -815,8 +816,8 @@ const Linker = struct {
         }
 
         if (iife) {
-            // Une IIFE n'exporte rien : on compte quand même ce qu'on perd, pour
-            // que l'appelant puisse le signaler.
+            // An IIFE exports nothing: we still count what is lost, so the
+            // caller can report it.
             self.entry_exports = try self.countEntryExports();
             try out.appendSlice(self.a, "})();\n");
             return;
@@ -842,9 +843,9 @@ const Linker = struct {
             else if (std.mem.eql(u8, key, "*")) ns_name = e.value_ptr.*
             else try named.append(self.a, .{ .exported = key, .final = e.value_ptr.* });
         }
-        std.mem.sort(NamePair, named.items, {}, byExported); // déterminisme
+        std.mem.sort(NamePair, named.items, {}, byExported); // determinism
 
-        // `import * as ns` ne se mélange pas aux autres clauses : ligne à part.
+        // `import * as ns` does not mix with other clauses: its own line.
         if (ns_name) |ns| {
             try out.appendSlice(self.a, try std.fmt.allocPrint(
                 self.a,
@@ -880,36 +881,36 @@ const Linker = struct {
         try out.appendSlice(self.a, try std.fmt.allocPrint(self.a, " from {f};\n", .{Quoted{ .s = ext.specifier }}));
     }
 
-    /// Le corps d'un module : chaque statement top-level, les déclarations de
-    /// module en moins. Le PRINTER de zcompiler fait le rendu — l'AST porte déjà
-    /// les noms finaux (`applyRenames` est passé), donc il n'y a rien à réécrire.
+    /// A module's body: every top-level statement, minus the module
+    /// declarations. zcompiler's PRINTER does the rendering — the AST already
+    /// carries the final names (`applyRenames` has run), so nothing to rewrite.
     fn emitModuleBody(self: *Linker, m: *Mod, out: *std.ArrayList(u8)) Error!void {
         for (m.units) |unit| {
-            if (!unit.alive) continue; // le SWEEP : le code mort n'est pas émis
+            if (!unit.alive) continue; // the SWEEP: dead code is not emitted
             try self.emitStatement(m, unit.stmt, out);
         }
     }
 
     fn emitStatement(self: *Linker, m: *Mod, stmt: *zc.Node, out: *std.ArrayList(u8)) Error!void {
         switch (stmt.kind) {
-            // Les imports DISPARAISSENT : ce n'étaient que des alias de noms.
+            // Imports VANISH: they were only name aliases.
             .import_declaration => {},
-            // `export * from` / `export * as ns from` : rien à émettre (la table
-            // d'exports et l'objet namespace s'en chargent).
+            // `export * from` / `export * as ns from`: nothing to emit (the
+            // export table and the namespace object handle it).
             .export_all_declaration => {},
             .export_named_declaration => |e| {
-                // `export const x = 1` -> `const x = 1` (on perd le mot-clé).
+                // `export const x = 1` -> `const x = 1` (the keyword is dropped).
                 if (e.declaration) |decl| try self.printStmt(m, decl, out);
-                // `export { a }` / `export { a } from './x'` : rien (table).
+                // `export { a }` / `export { a } from './x'`: nothing (table).
             },
             .export_default_declaration => {
-                // `export default foo` (un binding) : rien à émettre.
-                // `export default <expr>` : on lie l'expression au nom fabriqué.
+                // `export default foo` (a binding): nothing to emit.
+                // `export default <expr>`: bind the expression to the synthesized name.
                 for (m.info.exports) |e| {
                     if (e.kind != .default_expr) continue;
                     try out.appendSlice(self.a, try std.fmt.allocPrint(self.a, "const {s} = ", .{m.default_name.?}));
                     zc.printer.printExpression(e.value.?, m.source, out, self.a) catch
-                        return self.fail("impossible d'imprimer l'export default de {s}", .{self.display(m.path)});
+                        return self.fail("cannot print the default export of {s}", .{self.display(m.path)});
                     try out.appendSlice(self.a, ";\n");
                 }
             },
@@ -919,11 +920,12 @@ const Linker = struct {
 
     fn printStmt(self: *Linker, m: *Mod, stmt: *zc.Node, out: *std.ArrayList(u8)) Error!void {
         zc.printer.printStatement(stmt, m.source, out, self.a) catch
-            return self.fail("impossible d'imprimer un statement de {s}", .{self.display(m.path)});
+            return self.fail("cannot print a statement of {s}", .{self.display(m.path)});
     }
 
-    /// L'objet namespace : la SEULE matérialisation du linking. `import * as ns`
-    /// veut un vrai objet à l'exécution, on le construit à partir des noms finaux.
+    /// The namespace object: the ONLY materialization in linking.
+    /// `import * as ns` wants a real object at runtime, so we build it from the
+    /// final names.
     fn emitNamespace(self: *Linker, id: ModuleId, name: []const u8, out: *std.ArrayList(u8)) Error!void {
         var pairs: std.ArrayList(NamePair) = .empty;
         var seen: std.StringHashMapUnmanaged(void) = .empty;
@@ -938,7 +940,7 @@ const Linker = struct {
         try out.appendSlice(self.a, if (pairs.items.len == 0) "};\n" else " };\n");
     }
 
-    /// Les exports de l'ENTRY : les seuls survivants du bundle.
+    /// The ENTRY's exports: the bundle's only survivors.
     fn emitEntryExports(self: *Linker, out: *std.ArrayList(u8)) Error!u32 {
         var pairs: std.ArrayList(NamePair) = .empty;
         var seen: std.StringHashMapUnmanaged(void) = .empty;
@@ -959,10 +961,10 @@ const Linker = struct {
         return @intCast(pairs.items.len);
     }
 
-    // ---- utilitaires ----
+    // ---- utilities ----
 
-    /// Le chemin relatif au dossier de l'entry — lisible dans les en-têtes et
-    /// les messages d'erreur (un chemin absolu de 120 caractères ne l'est pas).
+    /// The path relative to the entry's directory — readable in headers and
+    /// error messages (a 120-character absolute path is not).
     fn display(self: *Linker, path: []const u8) []const u8 {
         const root = std.fs.path.dirname(self.mods[self.g.entry].path) orelse return path;
         if (path.len > root.len + 1 and std.mem.startsWith(u8, path, root) and path[root.len] == std.fs.path.sep) {
@@ -971,7 +973,7 @@ const Linker = struct {
         return path;
     }
 
-    /// Le nom de fichier sans extension, nettoyé pour servir d'identifiant JS.
+    /// The file name without extension, cleaned up to serve as a JS identifier.
     fn stem(self: *Linker, path: []const u8) []const u8 {
         const base = std.fs.path.basename(path);
         const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse base.len;
@@ -981,7 +983,7 @@ const Linker = struct {
 
 const NamePair = struct { exported: []const u8, final: []const u8 };
 
-/// Un binding, situé dans son module (un `*Binding` seul ne dit pas d'où il vient).
+/// A binding, located in its module (a bare `*Binding` does not say where it came from).
 const BindingRef = struct { mod: ModuleId, b: *zc.semantic.Binding };
 
 fn byExported(_: void, x: NamePair, y: NamePair) bool {
@@ -992,8 +994,8 @@ fn byDecl(_: void, x: *zc.semantic.Binding, y: *zc.semantic.Binding) bool {
     return x.decl_start < y.decl_start;
 }
 
-/// Transforme un texte quelconque en identifiant JS valide (`node:fs/promises`
-/// → `node_fs_promises`, `@scope/pkg` → `scope_pkg`).
+/// Turns arbitrary text into a valid JS identifier (`node:fs/promises` ->
+/// `node_fs_promises`, `@scope/pkg` -> `scope_pkg`).
 fn identifierFrom(a: Allocator, text: []const u8) Allocator.Error![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     for (text) |c| {
@@ -1008,7 +1010,7 @@ fn identifierFrom(a: Allocator, text: []const u8) Allocator.Error![]const u8 {
     return out.items;
 }
 
-/// La ligne (1-indexée) d'un offset dans un source.
+/// The (1-indexed) line of an offset in a source.
 fn lineOf(source: []const u8, offset: u32) u32 {
     var line: u32 = 1;
     const end = @min(offset, source.len);
@@ -1018,7 +1020,7 @@ fn lineOf(source: []const u8, offset: u32) u32 {
     return line;
 }
 
-/// Le code d'un statement, sur une ligne, tronqué — de quoi le reconnaître.
+/// A statement's code, on one line, truncated — enough to recognize it.
 fn snippetOf(a: Allocator, source: []const u8, stmt: *zc.Node) Allocator.Error![]const u8 {
     const raw = source[@min(stmt.start, source.len)..@min(stmt.end, source.len)];
     var out: std.ArrayList(u8) = .empty;
@@ -1039,20 +1041,20 @@ fn snippetOf(a: Allocator, source: []const u8, stmt: *zc.Node) Allocator.Error![
     return out.items;
 }
 
-/// Pourquoi ce statement est mort.
+/// Why this statement died.
 fn reasonOf(a: Allocator, u: shake.Unit, whole_module: bool) Allocator.Error![]const u8 {
-    if (whole_module) return "module entierement elimine (rien d'atteignable)";
-    if (u.declares.len == 0) return "statement pur, aucun effet observable";
+    if (whole_module) return "whole module eliminated (nothing reachable)";
+    if (u.declares.len == 0) return "pure statement, no observable effect";
     var names: std.ArrayList(u8) = .empty;
     for (u.declares, 0..) |b, i| {
         if (i != 0) try names.appendSlice(a, ", ");
         try names.appendSlice(a, b.name);
     }
-    return std.fmt.allocPrint(a, "aucune reference vivante vers {s}", .{names.items});
+    return std.fmt.allocPrint(a, "no live reference to {s}", .{names.items});
 }
 
-/// Une string JS entre guillemets simples (les specifiers n'en contiennent pas
-/// en pratique ; on échappe quand même).
+/// A single-quoted JS string (specifiers do not contain quotes in practice; we
+/// escape anyway).
 const Quoted = struct {
     s: []const u8,
     pub fn format(self: Quoted, writer: *std.Io.Writer) std.Io.Writer.Error!void {
@@ -1077,14 +1079,14 @@ const RESERVED = [_][]const u8{
     "eval",       "undefined",
 };
 
-/// Bundle `entry` en UN fichier de JS exécutable (format ESM).
+/// Bundles `entry` into ONE executable JS file (ESM format).
 pub fn bundle(a: Allocator, io: Io, entry: []const u8, err: *BundleError) Error!Bundle {
     const r = try bundleReport(a, io, entry, err, false, .{});
     return .{ .code = r.code, .stats = r.stats };
 }
 
-/// Idem, mais collecte aussi ce que le tree-shaking a éliminé (si `with_dead`),
-/// et accepte les options (le format de sortie).
+/// Same, but also collects what tree-shaking eliminated (when `with_dead`), and
+/// accepts options (the output format).
 pub fn bundleReport(a: Allocator, io: Io, entry: []const u8, err: *BundleError, with_dead: bool, opts: Options) Error!Report {
     const t0 = Io.Clock.awake.now(io).nanoseconds;
 
@@ -1097,8 +1099,8 @@ pub fn bundleReport(a: Allocator, io: Io, entry: []const u8, err: *BundleError, 
         },
     };
 
-    // Analyse de chaque module : scopes/bindings (le renommage) + table
-    // imports/exports (le linking). Les deux viennent de zcompiler.
+    // Analysis of each module: scopes/bindings (renaming) plus the
+    // imports/exports table (linking). Both come from zcompiler.
     const mods = try a.alloc(Mod, built.graph.modules.len);
     var input_bytes: u32 = 0;
     for (built.graph.modules, built.parsed, 0..) |gm, p, i| {
@@ -1118,22 +1120,22 @@ pub fn bundleReport(a: Allocator, io: Io, entry: []const u8, err: *BundleError, 
     var l = Linker{ .a = a, .err = err, .g = built.graph, .mods = mods, .opts = opts };
     try l.computeOrder();
     try l.check();
-    // MARK avant tout nommage : un binding mort ne doit pas consommer un nom
-    // (sinon un `helper` éliminé pousserait un `helper` vivant en `helper$1`).
+    // MARK before any naming: a dead binding must not consume a name (otherwise
+    // an eliminated `helper` would push a live `helper` to `helper$1`).
     try l.mark();
     try l.reserveNames();
     try l.assignNames();
     try l.linkImports();
     try l.checkNamespaceSnapshots();
 
-    // Les noms finaux descendent sur l'AST : une seule passe par module, et
-    // toutes les références (locales ET importées) sont à jour.
+    // Final names are written onto the AST: a single pass per module, and every
+    // reference (local AND imported) is up to date.
     for (mods) |m| zc.mangler.applyRenames(m.sem);
 
     var out: std.ArrayList(u8) = .empty;
     try l.emit(&out);
 
-    // Comptage du shaking (après coup : les unités portent leur verdict).
+    // Shaking counts (after the fact: units carry their verdict).
     var kept: u32 = 0;
     var dropped: u32 = 0;
     var emitted_mods: u32 = 0;
@@ -1149,15 +1151,15 @@ pub fn bundleReport(a: Allocator, io: Io, entry: []const u8, err: *BundleError, 
         if (any) emitted_mods += 1;
     }
 
-    // Ce qui est mort, pour qui veut le lire (`inspect.mjs --dead`).
+    // What died, for whoever wants to read it (`inspect.mjs --dead`).
     var dead: std.ArrayList(Dead) = .empty;
     if (with_dead) {
         for (mods, 0..) |m, mi| {
             const whole = !l.moduleAlive(@intCast(mi));
             for (m.units) |u| {
                 if (u.alive) continue;
-                // Les déclarations de module n'émettent rien de toute façon :
-                // les lister comme « éliminées » serait du bruit.
+                // Module declarations emit nothing anyway: listing them as
+                // "eliminated" would be noise.
                 switch (u.stmt.kind) {
                     .import_declaration, .export_all_declaration => continue,
                     .export_named_declaration => |e| if (e.declaration == null) continue,
@@ -1206,8 +1208,8 @@ const Sandbox = struct {
         var arena = std.heap.ArenaAllocator.init(gpa);
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         const n = try tmp.dir.realPath(io, &buf);
-        // En deux temps : sinon l'arène est copiée dans le slot de retour avant
-        // que `.root` n'alloue dedans (fuite — cf. la même note dans graph.zig).
+        // In two steps: otherwise the arena is copied into the return slot before
+        // `.root` allocates into it (a leak — same note as in graph.zig).
         const root = try arena.allocator().dupe(u8, buf[0..n]);
         return .{ .tmp = tmp, .arena = arena, .root = root };
     }
@@ -1231,7 +1233,7 @@ const Sandbox = struct {
         };
         return b.code;
     }
-    /// Le message d'erreur d'un bundle qui DOIT échouer.
+    /// The error message of a bundle that MUST fail.
     fn refusal(self: *Sandbox, entry: []const u8) ![]const u8 {
         var err: BundleError = .{};
         const full = try std.fs.path.join(self.a(), &.{ self.root, entry });
@@ -1243,12 +1245,12 @@ const Sandbox = struct {
     }
 };
 
-/// L'index de la première occurrence de `needle` (pour comparer des ORDRES).
+/// The index of the first occurrence of `needle` (to compare ORDERINGS).
 fn indexOf(haystack: []const u8, needle: []const u8) ?usize {
     return std.mem.indexOf(u8, haystack, needle);
 }
 
-test "ordre topologique : les dependances AVANT les dependants" {
+test "topological order: dependencies BEFORE dependents" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "import { b } from './b.js'; export const a = b + 1;");
@@ -1262,7 +1264,7 @@ test "ordre topologique : les dependances AVANT les dependants" {
     try std.testing.expect(ib < ia);
 }
 
-test "ordre topologique : le diamant emet le module partage UNE fois" {
+test "topological order: the diamond emits the shared module ONCE" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "import { b } from './b.js'; import { c } from './c.js'; export const a = b + c;");
@@ -1270,14 +1272,14 @@ test "ordre topologique : le diamant emet le module partage UNE fois" {
     try s.write("c.js", "import { d } from './d.js'; export const c = d;");
     try s.write("d.js", "export const d = 1;");
     const code = try s.bundleOf("a.js");
-    // Une seule declaration de `d`, et elle precede ses deux consommateurs.
+    // A single declaration of `d`, and it precedes both consumers.
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, code, "const d = 1"));
     const id = indexOf(code, "const d = 1").?;
     try std.testing.expect(id < indexOf(code, "const b = ").?);
     try std.testing.expect(id < indexOf(code, "const c = ").?);
 }
 
-test "un cycle ne fait pas boucler et emet chaque module une fois" {
+test "a cycle does not loop and emits each module once" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "import { b } from './b.js'; export function a() { return b(); }");
@@ -1287,38 +1289,38 @@ test "un cycle ne fait pas boucler et emet chaque module une fois" {
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, code, "function b()"));
 }
 
-test "table de renommage : collision -> name$1, pas de collision -> nom garde" {
+test "rename table: collision -> name$1, no collision -> name kept" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "const shared = 'A'; export const fromA = () => shared; export const unique = 1;");
     try s.write("b.js", "const shared = 'B'; export const fromB = () => shared;");
     try s.write("m.js", "import { fromA, unique } from './a.js'; import { fromB } from './b.js'; console.log(fromA(), fromB(), unique);");
     const code = try s.bundleOf("m.js");
-    // Le premier emis garde son nom, le second est suffixe.
+    // The first emitted keeps its name, the second gets a suffix.
     try std.testing.expect(indexOf(code, "const shared = 'A'") != null);
     try std.testing.expect(indexOf(code, "const shared$1 = 'B'") != null);
-    // Un nom sans collision n'est JAMAIS touche (lisibilite du bundle).
+    // A name without collision is NEVER touched (bundle readability).
     try std.testing.expect(indexOf(code, "const unique = 1") != null);
     try std.testing.expect(indexOf(code, "unique$1") == null);
 }
 
-test "les references suivent le renommage (l'import est un ALIAS)" {
+test "references follow the renaming (an import is an ALIAS)" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("dep.js", "export const value = 42;");
     try s.write("m.js", "const value = 'local'; export const both = () => value;");
     try s.write("main.js", "import { value } from './dep.js'; import { both } from './m.js'; console.log(value, both());");
     const code = try s.bundleOf("main.js");
-    // `value` (dep) garde son nom, `value` (m) est renomme, et l'usage dans `m`
-    // pointe bien sur le renomme.
+    // `value` (dep) keeps its name, `value` (m) is renamed, and the use inside
+    // `m` points at the renamed one.
     try std.testing.expect(indexOf(code, "const value = 42") != null);
     try std.testing.expect(indexOf(code, "const value$1 = 'local'") != null);
     try std.testing.expect(indexOf(code, "() => value$1") != null);
-    // Aucun `import` interne ne survit.
+    // No internal `import` survives.
     try std.testing.expect(indexOf(code, "from './dep.js'") == null);
 }
 
-test "la chaine de re-export se resout jusqu'au binding d'origine" {
+test "the re-export chain resolves down to the originating binding" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("deep.js", "export const original = 'deep';");
@@ -1326,14 +1328,14 @@ test "la chaine de re-export se resout jusqu'au binding d'origine" {
     try s.write("top.js", "export { renamed as final } from './mid.js';");
     try s.write("main.js", "import { final } from './top.js'; console.log(final);");
     const code = try s.bundleOf("main.js");
-    // Trois niveaux d'alias : il ne reste QUE le binding d'origine.
+    // Three levels of aliasing: ONLY the originating binding remains.
     try std.testing.expect(indexOf(code, "const original = 'deep'") != null);
     try std.testing.expect(indexOf(code, "console.log(original)") != null);
     try std.testing.expect(indexOf(code, "renamed") == null);
     try std.testing.expect(indexOf(code, "final") == null);
 }
 
-test "export * from : le nom traverse et se resout" {
+test "export * from: the name passes through and resolves" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("src.js", "export const via_star = 7;");
@@ -1344,36 +1346,36 @@ test "export * from : le nom traverse et se resout" {
     try std.testing.expect(indexOf(code, "console.log(via_star)") != null);
 }
 
-test "namespace : materialise en objet, avec les noms FINAUX" {
+test "namespace: materialized as an object, with the FINAL names" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("m.js", "export const x = 1; export const y = 2;");
     try s.write("main.js", "const x = 'collision'; import * as ns from './m.js'; console.log(ns.x, ns.y, x);");
     const code = try s.bundleOf("main.js");
-    // L'objet existe, et pointe sur les noms finaux (pas les noms d'origine).
+    // The object exists, and points at the final names (not the original ones).
     try std.testing.expect(indexOf(code, "const m_ns = {") != null);
     try std.testing.expect(indexOf(code, "x: x") != null);
     try std.testing.expect(indexOf(code, "y: y") != null);
-    // Le nom local `ns` a disparu au profit du nom final de l'objet.
+    // The local name `ns` is gone, replaced by the object's final name.
     try std.testing.expect(indexOf(code, "console.log(m_ns.x, m_ns.y, x$1)") != null);
 }
 
-test "export default : expression nommee vs binding existant" {
+test "export default: named expression vs existing binding" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("expr.js", "export default function () { return 1; }");
     try s.write("bound.js", "const named = 2; export default named;");
     try s.write("main.js", "import e from './expr.js'; import b from './bound.js'; console.log(e(), b);");
     const code = try s.bundleOf("main.js");
-    // L'expression recoit un nom fabrique...
+    // The expression gets a synthesized name...
     try std.testing.expect(indexOf(code, "const expr_default = function") != null);
-    // ...mais un binding existant n'a PAS de const intermediaire inutile.
+    // ...but an existing binding gets NO useless intermediate const.
     try std.testing.expect(indexOf(code, "const named = 2") != null);
     try std.testing.expect(indexOf(code, "bound_default") == null);
     try std.testing.expect(indexOf(code, "console.log(expr_default(), named)") != null);
 }
 
-test "externals : hoistes en tete, dedupliques et fusionnes" {
+test "externals: hoisted to the top, deduplicated and merged" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "import { join } from 'node:path'; export const ja = join;");
@@ -1384,15 +1386,15 @@ test "externals : hoistes en tete, dedupliques et fusionnes" {
         \\console.log(join, basename, ja, fs);
     );
     const code = try s.bundleOf("main.js");
-    // UNE seule ligne pour node:path, avec les deux noms fusionnes.
+    // A SINGLE line for node:path, with both names merged.
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, code, "from 'node:path'"));
     try std.testing.expect(indexOf(code, "import { basename, join } from 'node:path';") != null);
     try std.testing.expect(indexOf(code, "import node_fs from 'node:fs';") != null);
-    // Les imports sont AVANT le premier module.
+    // Imports come BEFORE the first module.
     try std.testing.expect(indexOf(code, "from 'node:path'").? < indexOf(code, "\u{2500}\u{2500} a.js").?);
 }
 
-test "les exports de l'ENTRY sont les seuls survivants" {
+test "the ENTRY's exports are the only survivors" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("hidden.js", "export const internal = 1;");
@@ -1402,7 +1404,7 @@ test "les exports de l'ENTRY sont les seuls survivants" {
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, code, "export {"));
 }
 
-test "refus : top-level await, import.meta, import() interne, namespace live" {
+test "refusals: top-level await, import.meta, internal import(), live namespace" {
     {
         var s = try Sandbox.init(std.testing.allocator);
         defer s.deinit();
@@ -1428,13 +1430,14 @@ test "refus : top-level await, import.meta, import() interne, namespace live" {
         try s.write("c.js", "export let n = 0; export function bump() { n += 1; }");
         try s.write("main.js", "import * as ns from './c.js'; ns.bump(); console.log(ns.n);");
         const msg = try s.refusal("main.js");
-        try std.testing.expect(indexOf(msg, "objet namespace") != null);
+        try std.testing.expect(indexOf(msg, "namespace object") != null);
     }
 }
 
-test "live binding importe NOMMEMENT : accepte (le hoisting le gere)" {
-    // Le pendant du refus precedent : sans namespace, la reassignation est
-    // visible chez l'importeur puisque c'est LA MEME variable apres fusion.
+test "live binding imported BY NAME: accepted (hoisting handles it)" {
+    // The counterpart of the previous refusal: without a namespace, the
+    // reassignment is visible to the importer since it is THE SAME variable
+    // after merging.
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("c.js", "export let n = 0; export function bump() { n += 1; }");
@@ -1444,7 +1447,7 @@ test "live binding importe NOMMEMENT : accepte (le hoisting le gere)" {
     try std.testing.expect(indexOf(code, "console.log(n)") != null);
 }
 
-test "un import() vers un EXTERNAL reste tel quel (pas un chunk)" {
+test "an import() of an EXTERNAL stays as is (not a chunk)" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("main.js", "export const load = () => import('node:fs');");
@@ -1452,9 +1455,9 @@ test "un import() vers un EXTERNAL reste tel quel (pas un chunk)" {
     try std.testing.expect(indexOf(code, "import('node:fs')") != null);
 }
 
-// ---- tree-shaking (v0.3) ----
+// ---- tree-shaking ----
 
-test "shaking : un import de 1 nom sur 3 ne tire QUE lui" {
+test "shaking: importing 1 name out of 3 pulls in ONLY that one" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("lib.js",
@@ -1469,7 +1472,7 @@ test "shaking : un import de 1 nom sur 3 ne tire QUE lui" {
     try std.testing.expect(indexOf(code, "dead2") == null);
 }
 
-test "shaking : un module dont rien ne survit disparait, en-tete comprise" {
+test "shaking: a module of which nothing survives disappears, header included" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("used.js", "export const used = 1;");
@@ -1477,12 +1480,12 @@ test "shaking : un module dont rien ne survit disparait, en-tete comprise" {
     try s.write("barrel.js", "export { used } from './used.js'; export { unused } from './unused.js';");
     try s.write("main.js", "import { used } from './barrel.js'; console.log(used);");
     const code = try s.bundleOf("main.js");
-    try std.testing.expect(indexOf(code, "unused.js") == null); // meme l'en-tete
+    try std.testing.expect(indexOf(code, "unused.js") == null); // even the header
     try std.testing.expect(indexOf(code, "const unused") == null);
     try std.testing.expect(indexOf(code, "const used = 1") != null);
 }
 
-test "shaking : un effet de bord top-level SURVIT sans etre importe" {
+test "shaking: a top-level side effect SURVIVES without being imported" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("polyfill.js",
@@ -1491,61 +1494,61 @@ test "shaking : un effet de bord top-level SURVIT sans etre importe" {
     );
     try s.write("main.js", "import './polyfill.js'; console.log(globalThis.PATCHED);");
     const code = try s.bundleOf("main.js");
-    // L'effet est une RACINE : il vit meme si rien n'est importe du module.
+    // The effect is a ROOT: it lives even if nothing is imported from the module.
     try std.testing.expect(indexOf(code, "globalThis.PATCHED = true") != null);
-    // Mais la fonction pure et inutilisee du meme module meurt.
+    // But the pure, unused function of the same module dies.
     try std.testing.expect(indexOf(code, "neverUsed") == null);
 }
 
-test "shaking : le corps d'une fonction vivante tire ce qu'il touche" {
+test "shaking: the body of a live function pulls in what it touches" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("deep.js", "export const deep = () => 'profond';");
     try s.write("mid.js", "import { deep } from './deep.js'; export const mid = () => deep() + '!';");
     try s.write("main.js", "import { mid } from './mid.js'; console.log(mid());");
     const code = try s.bundleOf("main.js");
-    // La chaine transitive entiere survit.
+    // The whole transitive chain survives.
     try std.testing.expect(indexOf(code, "'profond'") != null);
     try std.testing.expect(indexOf(code, "const mid") != null);
 }
 
-test "shaking : un cycle mort disparait sans faire boucler le marquage" {
+test "shaking: a dead cycle disappears without looping the mark phase" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "import { b } from './b.js'; export const a = () => b();");
     try s.write("b.js", "import { a } from './a.js'; export const b = () => a();");
     try s.write("main.js", "import './a.js'; console.log('rien du cycle');");
     const code = try s.bundleOf("main.js");
-    // Rien du cycle n'est utilise : tout meurt, et le point fixe termine.
+    // Nothing of the cycle is used: it all dies, and the fixed point terminates.
     try std.testing.expect(indexOf(code, "const a = ") == null);
     try std.testing.expect(indexOf(code, "const b = ") == null);
     try std.testing.expect(indexOf(code, "rien du cycle") != null);
 }
 
-test "shaking : un binding MORT ne consomme pas de nom" {
+test "shaking: a DEAD binding does not consume a name" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("dead.js", "export const helper = () => 'mort';");
     try s.write("live.js", "const helper = () => 'vivant'; export const use = () => helper();");
     try s.write("main.js", "import './dead.js'; import { use } from './live.js'; console.log(use());");
     const code = try s.bundleOf("main.js");
-    // Le `helper` mort a disparu, donc le vivant garde son nom : pas de `helper$1`.
+    // The dead `helper` is gone, so the live one keeps its name: no `helper$1`.
     try std.testing.expect(indexOf(code, "helper$1") == null);
     try std.testing.expect(indexOf(code, "const helper = () => 'vivant'") != null);
 }
 
-test "shaking : un external dont plus rien ne survit disparait de l'en-tete" {
+test "shaking: an external of which nothing survives leaves the header" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("dead.js", "import { join } from 'node:path'; export const j = () => join('a');");
-    // NB : le message ne doit pas contenir le specifier, sinon on s'auto-piege.
+    // NB: the message must not contain the specifier, or we trap ourselves.
     try s.write("main.js", "import './dead.js'; console.log('rien a importer');");
     const code = try s.bundleOf("main.js");
     try std.testing.expect(indexOf(code, "node:path") == null);
-    try std.testing.expect(indexOf(code, "import ") == null); // aucun en-tete d'import
+    try std.testing.expect(indexOf(code, "import ") == null); // no import header at all
 }
 
-test "shaking : un import side-effect nu garde ses effets, meme sans binding" {
+test "shaking: a bare side-effect import keeps its effects, even without bindings" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("css.js", "globalThis.STYLED = 1;");
@@ -1554,30 +1557,30 @@ test "shaking : un import side-effect nu garde ses effets, meme sans binding" {
     try std.testing.expect(indexOf(code, "globalThis.STYLED = 1") != null);
 }
 
-test "shaking : les exports de l'ENTRY sont des racines" {
+test "shaking: the ENTRY's exports are roots" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("lib.js", "export const exposed = 1; export const hidden = 2;");
     try s.write("main.js", "export { exposed } from './lib.js';");
     const code = try s.bundleOf("main.js");
-    // `exposed` est le contrat du bundle : il vit. `hidden` non.
+    // `exposed` is the bundle's contract: it lives. `hidden` does not.
     try std.testing.expect(indexOf(code, "const exposed = 1") != null);
     try std.testing.expect(indexOf(code, "hidden") == null);
 }
 
-test "shaking : un namespace rend TOUT vivant (le prix d'import * as)" {
+test "shaking: a namespace makes EVERYTHING live (the price of import * as)" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("m.js", "export const a = 1; export const b = 2; export const c = 3;");
     try s.write("main.js", "import * as ns from './m.js'; console.log(ns.a);");
     const code = try s.bundleOf("main.js");
-    // L'objet namespace expose tout : impossible de savoir ce qui sera lu.
+    // The namespace object exposes everything: impossible to know what gets read.
     try std.testing.expect(indexOf(code, "const a = 1") != null);
     try std.testing.expect(indexOf(code, "const b = 2") != null);
     try std.testing.expect(indexOf(code, "const c = 3") != null);
 }
 
-test "shaking : les stats comptent ce qui est garde et ce qui tombe" {
+test "shaking: the stats count what is kept and what falls" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("lib.js", "export const a = 1; export const b = 2; export const c = 3;");
@@ -1585,12 +1588,12 @@ test "shaking : les stats comptent ce qui est garde et ce qui tombe" {
     var err: BundleError = .{};
     const full = try std.fs.path.join(s.a(), &.{ s.root, "main.js" });
     const b = try bundle(s.a(), Sandbox.io, full, &err);
-    try std.testing.expect(b.stats.statements_dropped >= 2); // b et c
-    try std.testing.expect(b.stats.statements_kept >= 2); // a et le console.log
+    try std.testing.expect(b.stats.statements_dropped >= 2); // b and c
+    try std.testing.expect(b.stats.statements_kept >= 2); // a and the console.log
     try std.testing.expectEqual(@as(u32, 0), b.stats.modules_dropped);
 }
 
-test "shaking : le rapport dit CE QUI est mort et POURQUOI" {
+test "shaking: the report says WHAT died and WHY" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("lib.js", "export const kept = 1;\nexport const dropped = 2;");
@@ -1602,10 +1605,10 @@ test "shaking : le rapport dit CE QUI est mort et POURQUOI" {
     try std.testing.expect(std.mem.endsWith(u8, r.dead[0].module, "lib.js"));
     try std.testing.expectEqual(@as(u32, 2), r.dead[0].line);
     try std.testing.expect(indexOf(r.dead[0].snippet, "dropped") != null);
-    try std.testing.expect(indexOf(r.dead[0].reason, "aucune reference vivante") != null);
+    try std.testing.expect(indexOf(r.dead[0].reason, "no live reference") != null);
 }
 
-test "format iife : tout enferme dans une fonction, rien n'exporte" {
+test "format iife: everything wrapped in a function, nothing exported" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("lib.js", "export const greet = () => 'salut';");
@@ -1615,12 +1618,12 @@ test "format iife : tout enferme dans une fonction, rien n'exporte" {
     const r = try bundleReport(s.a(), Sandbox.io, full, &err, false, .{ .format = .iife });
     try std.testing.expect(indexOf(r.code, "(() => {") != null);
     try std.testing.expect(std.mem.endsWith(u8, r.code, "})();\n"));
-    // Une IIFE n'exporte rien — mais on COMPTE ce qu'on perd, pour le signaler.
+    // An IIFE exports nothing — but we COUNT what is lost, to report it.
     try std.testing.expect(indexOf(r.code, "export {") == null);
     try std.testing.expectEqual(@as(u32, 1), r.stats.entry_exports);
 }
 
-test "format iife : refus clair si le bundle a des externals" {
+test "format iife: clear refusal when the bundle has externals" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("main.js", "import { join } from 'node:path'; console.log(join('a', 'b'));");
@@ -1630,11 +1633,11 @@ test "format iife : refus clair si le bundle a des externals" {
         error.BundleFailed,
         bundleReport(s.a(), Sandbox.io, full, &err, false, .{ .format = .iife }),
     );
-    try std.testing.expect(indexOf(err.message, "incompatible avec des imports externes") != null);
-    try std.testing.expect(indexOf(err.message, "--format esm") != null); // dit quoi faire
+    try std.testing.expect(indexOf(err.message, "incompatible with external imports") != null);
+    try std.testing.expect(indexOf(err.message, "--format esm") != null); // says what to do
 }
 
-test "format esm reste le defaut, inchange" {
+test "format esm stays the default, unchanged" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("main.js", "export const x = 1;");
@@ -1643,13 +1646,13 @@ test "format esm reste le defaut, inchange" {
     try std.testing.expect(indexOf(code, "export { x };") != null);
 }
 
-// ---- les racines-export de l'entry : LES QUATRE FORMES ----
-// Ces tests ne corrigent aucun bug (les quatre formes marchaient) : ils
-// VERROUILLENT le cas limite « exporte + zero reference interne », qui est
-// exactement celui qu'un marquage naif (iterer les references au lieu des
-// exports) casserait sans que rien d'autre ne s'en apercoive.
+// ---- the entry's export roots: ALL FOUR FORMS ----
+// These tests fix no bug (all four forms worked): they LOCK IN the edge case
+// "exported + zero internal reference", which is exactly what a naive mark
+// phase (iterating references instead of exports) would break without anything
+// else noticing.
 
-test "racine-export : export <declaration> inline, zero reference" {
+test "export root: export <declaration> inline, zero references" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("main.js", "export function jamaisUtilisee(x) { return x; }\nconsole.log('ok');");
@@ -1658,7 +1661,7 @@ test "racine-export : export <declaration> inline, zero reference" {
     try std.testing.expect(indexOf(code, "export { jamaisUtilisee };") != null);
 }
 
-test "racine-export : export { a, b as c } (specifiers), zero reference" {
+test "export root: export { a, b as c } (specifiers), zero references" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("main.js",
@@ -1673,7 +1676,7 @@ test "racine-export : export { a, b as c } (specifiers), zero reference" {
     try std.testing.expect(indexOf(code, "export { a, b as renomme };") != null);
 }
 
-test "racine-export : export default (expression ET binding)" {
+test "export root: export default (expression AND binding)" {
     {
         var s = try Sandbox.init(std.testing.allocator);
         defer s.deinit();
@@ -1692,20 +1695,20 @@ test "racine-export : export default (expression ET binding)" {
     }
 }
 
-test "racine-export : re-export — la racine est dans le module CIBLE" {
+test "export root: re-export — the root lives in the TARGET module" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("dep.js", "export const cible = 1; export const inutile = 2;");
     try s.write("main.js", "export { cible } from './dep.js';\nconsole.log('ok');");
     const code = try s.bundleOf("main.js");
-    // Le binding vit dans dep.js : c'est LUI que la racine doit atteindre.
+    // The binding lives in dep.js: that is what the root must reach.
     try std.testing.expect(indexOf(code, "const cible = 1") != null);
     try std.testing.expect(indexOf(code, "export { cible };") != null);
-    // …sans tirer le reste du module cible.
+    // …without pulling in the rest of the target module.
     try std.testing.expect(indexOf(code, "inutile") == null);
 }
 
-test "racine-export : export * et export * as ns" {
+test "export root: export * and export * as ns" {
     {
         var s = try Sandbox.init(std.testing.allocator);
         defer s.deinit();
@@ -1721,13 +1724,13 @@ test "racine-export : export * et export * as ns" {
         try s.write("dep.js", "export const a = 1; export const b = 2;");
         try s.write("main.js", "export * as ns from './dep.js';\nconsole.log('ok');");
         const code = try s.bundleOf("main.js");
-        // Le namespace est materialise, et exporte sous son nom public.
+        // The namespace is materialized, and exported under its public name.
         try std.testing.expect(indexOf(code, "const dep_ns = {") != null);
         try std.testing.expect(indexOf(code, "as ns };") != null);
     }
 }
 
-test "racine-export : exporte survit, jumeau NON exporte meurt (pas de sur-marquage)" {
+test "export root: exported survives, non-exported twin dies (no over-marking)" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("main.js",

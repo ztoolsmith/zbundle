@@ -3,11 +3,11 @@
 // expect-exports: jamaisUtilisee:function
 // expect-call: jamaisUtilisee(42) -> inutile 42
 //
-// LE CAS LIMITE des racines du tree-shaking : une fonction EXPORTEE par l'entry
-// et JAMAIS referencee en interne. Zero reference + export — elle doit survivre,
-// parce que les exports de l'entry sont le contrat public du bundle.
+// THE EDGE CASE of tree-shaking roots: a function EXPORTED by the entry and
+// NEVER referenced internally. Zero references + exported — it must survive,
+// because the entry's exports are the bundle's public contract.
 //
-// Son jumeau non exporte, lui, doit mourir : le fix ne doit pas SUR-marquer.
+// Its non-exported twin must die: marking must not OVER-mark.
 
 interface Task {
   id: number;
@@ -35,12 +35,12 @@ function count<T>(items: readonly T[], keep: Filter<T>): number {
 const faites = count(tasks, (t: Task) => t.done);
 const restantes = count(tasks, (t: Task) => !t.done);
 
-// EXPORTEE, zero reference -> RACINE, elle survit.
+// EXPORTED, zero references -> a ROOT, it survives.
 export function jamaisUtilisee(x: number): string {
   return `inutile ${x}`;
 }
 
-// PAS exportee, zero reference -> inatteignable, elle meurt.
+// NOT exported, zero references -> unreachable, it dies.
 function jamaisUtiliseePrivee(x: number): string {
   return `prive ${x}`;
 }

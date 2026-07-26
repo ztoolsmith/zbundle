@@ -3,5 +3,5 @@
 import './polyfill.js';
 import { readRegistry } from './registry.js';
 
-console.log('patché ?', globalThis.__PATCHED__);
-console.log('registre:', readRegistry());
+console.log('patched?', globalThis.__PATCHED__);
+console.log('registry:', readRegistry());

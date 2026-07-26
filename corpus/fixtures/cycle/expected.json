@@ -1,11 +1,29 @@
 {
-  "why": "Un cycle ESM (legal !) : entry -> b -> entry. Detecte et LISTE, jamais une erreur, et surtout pas de boucle infinie.",
+  "why": "An ESM cycle (legal!): entry -> b -> entry. Detected and LISTED, never an error, and above all no infinite loop.",
   "entry": "entry.js",
-  "modules": ["entry.js", "b.js"],
+  "modules": [
+    "entry.js",
+    "b.js"
+  ],
   "edges": [
-    { "from": "entry.js", "to": "b.js", "specifier": "./b.js", "kind": "import" },
-    { "from": "b.js", "to": "entry.js", "specifier": "./entry.js", "kind": "import" }
+    {
+      "from": "entry.js",
+      "to": "b.js",
+      "specifier": "./b.js",
+      "kind": "import"
+    },
+    {
+      "from": "b.js",
+      "to": "entry.js",
+      "specifier": "./entry.js",
+      "kind": "import"
+    }
   ],
   "externals": [],
-  "cycles": [["entry.js", "b.js"]]
+  "cycles": [
+    [
+      "entry.js",
+      "b.js"
+    ]
+  ]
 }

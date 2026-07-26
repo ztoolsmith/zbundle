@@ -1,4 +1,4 @@
-// export default d'une classe nommee.
+// export default of a named class.
 export default class Counter {
   constructor(start) {
     this.n = start;

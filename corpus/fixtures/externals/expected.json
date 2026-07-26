@@ -1,22 +1,75 @@
 {
-  "why": "Les specifiers NUS ne sont pas une erreur : ils deviennent des externals et le graphe CONTINUE (comportement --external d'esbuild). node_modules, c'est la v0.5. `react` est importe deux fois -> UN external, count 2.",
+  "why": "Bare specifiers are not an error: they become externals and the graph CARRIES ON (esbuild's --external behaviour). node_modules comes later. `react` is imported twice -> ONE external, count 2.",
   "entry": "entry.js",
-  "modules": ["entry.js", "local.js"],
+  "modules": [
+    "entry.js",
+    "local.js"
+  ],
   "edges": [
-    { "from": "entry.js", "external": "react", "specifier": "react", "kind": "import" },
-    { "from": "entry.js", "external": "react-dom", "specifier": "react-dom", "kind": "import" },
-    { "from": "entry.js", "external": "lodash/debounce", "specifier": "lodash/debounce", "kind": "import" },
-    { "from": "entry.js", "external": "node:fs/promises", "specifier": "node:fs/promises", "kind": "import" },
-    { "from": "entry.js", "external": "@scope/ui", "specifier": "@scope/ui", "kind": "import" },
-    { "from": "entry.js", "to": "local.js", "specifier": "./local.js", "kind": "import" },
-    { "from": "local.js", "external": "react", "specifier": "react", "kind": "import" }
+    {
+      "from": "entry.js",
+      "external": "react",
+      "specifier": "react",
+      "kind": "import"
+    },
+    {
+      "from": "entry.js",
+      "external": "react-dom",
+      "specifier": "react-dom",
+      "kind": "import"
+    },
+    {
+      "from": "entry.js",
+      "external": "lodash/debounce",
+      "specifier": "lodash/debounce",
+      "kind": "import"
+    },
+    {
+      "from": "entry.js",
+      "external": "node:fs/promises",
+      "specifier": "node:fs/promises",
+      "kind": "import"
+    },
+    {
+      "from": "entry.js",
+      "external": "@scope/ui",
+      "specifier": "@scope/ui",
+      "kind": "import"
+    },
+    {
+      "from": "entry.js",
+      "to": "local.js",
+      "specifier": "./local.js",
+      "kind": "import"
+    },
+    {
+      "from": "local.js",
+      "external": "react",
+      "specifier": "react",
+      "kind": "import"
+    }
   ],
   "externals": [
-    { "specifier": "react", "count": 2 },
-    { "specifier": "react-dom", "count": 1 },
-    { "specifier": "lodash/debounce", "count": 1 },
-    { "specifier": "node:fs/promises", "count": 1 },
-    { "specifier": "@scope/ui", "count": 1 }
+    {
+      "specifier": "react",
+      "count": 2
+    },
+    {
+      "specifier": "react-dom",
+      "count": 1
+    },
+    {
+      "specifier": "lodash/debounce",
+      "count": 1
+    },
+    {
+      "specifier": "node:fs/promises",
+      "count": 1
+    },
+    {
+      "specifier": "@scope/ui",
+      "count": 1
+    }
   ],
   "cycles": []
 }

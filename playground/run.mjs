@@ -1,27 +1,27 @@
-// LE JUGE SUPRÊME de la v0.2 : le bundle produit-il le MÊME résultat que le
-// projet d'origine ?
+// THE ULTIMATE JUDGE: does the bundle produce the SAME result as the original
+// project?
 //
-//   pour chaque projet de projects/ :
-//     1. exécuter l'ORIGINAL dans Node        → stdout de référence
-//     2. bundler avec zbundle                 → un seul fichier
-//     3. exécuter LE BUNDLE dans Node         → stdout du bundle
-//     4. diff. Identique = vert.
+//   for each project in projects/:
+//     1. run THE ORIGINAL in Node    -> reference stdout
+//     2. bundle it with zbundle      -> a single file
+//     3. run THE BUNDLE in Node      -> bundle stdout
+//     4. diff. Identical = green.
 //
-// C'est le round-trip du bundler, le pendant exact du `parse ∘ print` de
-// zcompiler : la seule vérification qui ne peut pas se tromper elle-même.
+// This is the bundler's round-trip, the exact counterpart of zcompiler's
+// `parse ∘ print`: the only check that cannot fool itself.
 //
-// Puis les REFUS (refusals/) : chacun DOIT échouer, avec un message qui
-// explique. Un refus silencieux ou un bundle faux serait pire qu'une erreur.
+// Then the REFUSALS (refusals/): each one MUST fail, with a message that
+// explains. A silent refusal or a wrong bundle would be worse than an error.
 //
-// Usage :
-//   node run.mjs                 # tout
-//   node run.mjs diamond cycle   # ces projets seulement
-//   node run.mjs --keep          # garde les bundles générés (pour les lire)
+// Usage:
+//   node run.mjs                 # everything
+//   node run.mjs diamond cycle   # only those projects
+//   node run.mjs --keep          # keep the generated bundles, to read them
 //
-// La référence pour un projet TS/JSX : Node ne sait pas exécuter `.tsx`, donc
-// chaque module est compilé INDIVIDUELLEMENT par zcompiler (strip types + lower
-// JSX) dans un dossier miroir, puis exécuté par le loader ESM de Node. Ce n'est
-// pas circulaire : ça isole exactement ce qu'on teste — le LINKING.
+// The reference for a TS/JSX project: Node cannot execute `.tsx`, so each module
+// is compiled INDIVIDUALLY by zcompiler (strip types + lower JSX) into a mirror
+// directory, then run by Node's own ESM loader. That is not circular: it isolates
+// exactly what we are testing — the LINKING.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -45,7 +45,7 @@ const OFF = "\x1b[0m";
 let pass = 0;
 const failures = [];
 
-/** L'entry d'un projet : le seul `main.*`. */
+/** A project's entry: the one `main.*`. */
 function entryOf(dir) {
   const hit = fs.readdirSync(dir).find((f) => /^main\.(m?js|jsx|tsx|ts)$/.test(f));
   return hit ? path.join(dir, hit) : null;
@@ -59,7 +59,7 @@ function run(file, cwd) {
   });
 }
 
-/** Tous les fichiers source d'un projet (hors node_modules et artefacts). */
+/** All of a project's source files (excluding node_modules and artifacts). */
 function sources(dir) {
   const out = [];
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -72,9 +72,9 @@ function sources(dir) {
 }
 
 /**
- * La référence pour un projet contenant du TS/JSX : un miroir où chaque module
- * est compilé SÉPARÉMENT par zcompiler, puis exécuté par Node. Les specifiers
- * `./x.tsx` deviennent `./x.js` (Node exige l'extension réelle).
+ * The reference for a project containing TS/JSX: a mirror where each module is
+ * compiled SEPARATELY by zcompiler, then run by Node. `./x.tsx` specifiers
+ * become `./x.js` (Node requires the real extension).
  */
 function mirrorCompile(dir) {
   const mirror = path.join(dir, ".reference");
@@ -94,8 +94,8 @@ function mirrorCompile(dir) {
     fs.mkdirSync(path.dirname(out), { recursive: true });
     fs.writeFileSync(out, code);
   }
-  // Les node_modules du projet doivent rester atteignables depuis le miroir :
-  // il est DANS le projet, donc la résolution Node remonte naturellement.
+  // The project's node_modules must stay reachable from the mirror: it lives
+  // INSIDE the project, so Node's resolution walks up naturally.
   return path.join(mirror, "main.js");
 }
 
@@ -104,19 +104,19 @@ const needsCompile = (dir) => sources(dir).some((f) => /\.(tsx|ts|jsx)$/.test(f)
 function checkProject(dir) {
   const name = path.basename(dir);
   const entry = entryOf(dir);
-  if (!entry) return record(name, "aucun main.* dans le projet");
+  if (!entry) return record(name, "no main.* in the project");
 
-  // 1. l'original (directement, ou via le miroir compilé pour TS/JSX)
+  // 1. the original (directly, or through the compiled mirror for TS/JSX)
   let reference;
   let referenceFile = entry;
   try {
     if (needsCompile(dir)) referenceFile = mirrorCompile(dir);
     reference = run(referenceFile, dir);
   } catch (err) {
-    return record(name, "l'ORIGINAL ne s'exécute pas", (err.stderr || err.message).trim());
+    return record(name, "THE ORIGINAL does not run", (err.stderr || err.message).trim());
   }
 
-  // 2. le bundle
+  // 2. the bundle
   let code;
   let stats;
   try {
@@ -124,39 +124,39 @@ function checkProject(dir) {
     code = r.code;
     stats = r.stats;
   } catch (err) {
-    return record(name, "bundle() a échoué", err.message);
+    return record(name, "bundle() failed", err.message);
   }
 
-  // Écrit DANS le projet : les externals (`react/jsx-runtime`, …) doivent se
-  // résoudre depuis là comme pour l'original.
+  // Written INSIDE the project: externals (`react/jsx-runtime`, …) must resolve
+  // from there just as they do for the original.
   const bundleFile = path.join(dir, ".bundle.mjs");
   fs.writeFileSync(bundleFile, code);
 
-  // 3. exécution du bundle
+  // 3. running the bundle
   let actual;
   try {
     actual = run(bundleFile, dir);
   } catch (err) {
-    return record(name, "LE BUNDLE ne s'exécute pas", (err.stderr || err.message).trim());
+    return record(name, "THE BUNDLE does not run", (err.stderr || err.message).trim());
   }
 
-  // 4. le verdict
+  // 4. the verdict
   if (actual !== reference) {
-    return record(name, "stdout DIFFÈRE", diff(reference, actual));
+    return record(name, "stdout DIFFERS", diff(reference, actual));
   }
 
-  // Bonus, gratuit : le bundle est-il du JS sain, et ne fuit-il aucun nom interne ?
+  // Free bonus: is the bundle sane JS, and does it leak no internal name?
   const health = checkHealth(code, stats);
   if (health) return record(name, health.what, health.detail);
 
-  // v0.3 : le tree-shaking se verifie TEXTUELLEMENT. Un stdout identique prouve
-  // que rien de vivant n'a ete supprime ; il ne prouve pas que le mort l'a ete.
+  // Tree-shaking is verified TEXTUALLY. Identical stdout proves nothing live was
+  // removed; it does not prove the dead was.
   const shaking = checkShaking(dir, entry, code);
   if (shaking) return record(name, shaking.what, shaking.detail);
 
-  // LE TEMOIN-IMPORTEUR : les exports sont un CONTRAT, ils se testent comme tel.
-  // Exécuter le bundle comme un script ne touche JAMAIS son `export { … }` —
-  // c'est le trou par lequel une régression d'export passerait inaperçue.
+  // THE IMPORTING WITNESS: exports are a CONTRACT, so they get tested as one.
+  // Running the bundle as a script NEVER touches its `export { … }` — that is
+  // the hole through which an export regression would slip unnoticed.
   const exports = checkExports(dir, entry, bundleFile);
   if (exports) return record(name, exports.what, exports.detail);
 
@@ -170,21 +170,21 @@ function checkProject(dir) {
       : "";
   console.log(
     `  ${GREEN}✔${OFF} ${name.padEnd(16)} ${String(stats.modules).padStart(3)} modules  ` +
-      `${stats.externals} ext  ${String(stats.renamed).padStart(2)} renommés  ` +
-      `${shaken}${stats.input_bytes}→${stats.output_bytes} o (${pct} %)  ${DIM}${stats.bundle_ms.toFixed(2)} ms${OFF}`,
+      `${stats.externals} ext  ${String(stats.renamed).padStart(2)} renamed  ` +
+      `${shaken}${stats.input_bytes}→${stats.output_bytes} B (${pct} %)  ${DIM}${stats.bundle_ms.toFixed(2)} ms${OFF}`,
   );
 }
 
 /**
- * LE TÉMOIN-IMPORTEUR. Pour un projet qui déclare `// expect-exports:`, on
- * génère un module qui **importe le bundle** et vérifie son contrat :
+ * THE IMPORTING WITNESS. For a project declaring `// expect-exports:`, we
+ * generate a module that **imports the bundle** and checks its contract:
  *
  *   // expect-exports: jamaisUtilisee:function VERSION:string
  *   // expect-call: jamaisUtilisee(42) -> inutile 42
  *
- * `Object.keys` + `typeof` de chaque export, puis appel réel de ceux qu'un
- * `expect-call` désigne. Sans ça, `export { … }` n'est jamais exercé : le
- * harnais exécute le bundle comme un SCRIPT, et un script ignore ses exports.
+ * `Object.keys` plus `typeof` for each export, then a real call of those an
+ * `expect-call` designates. Without this, `export { … }` is never exercised: the
+ * harness runs the bundle as a SCRIPT, and a script ignores its exports.
  */
 function checkExports(dir, entry, bundleFile) {
   const head = fs.readFileSync(entry, "utf8");
@@ -247,16 +247,16 @@ function checkExports(dir, entry, bundleFile) {
     run(witness, dir);
     return null;
   } catch (err) {
-    return { what: "le CONTRAT d'export du bundle est casse", detail: (err.stderr || err.message).trim() };
+    return { what: "the bundle's export CONTRACT is broken", detail: (err.stderr || err.message).trim() };
   } finally {
     if (!keep) fs.rmSync(witness, { force: true });
   }
 }
 
 /**
- * Les en-têtes `// expect-absent:` / `// expect-present:` du `main.*` : la seule
- * façon de prouver que le tree-shaking a mordu. Un stdout identique montre que
- * rien de VIVANT n'a été supprimé — pas que le MORT a disparu.
+ * The `// expect-absent:` / `// expect-present:` headers of `main.*`: the only
+ * way to prove tree-shaking bit. Identical stdout shows nothing LIVE was
+ * removed — not that the DEAD is gone.
  */
 function checkShaking(dir, entry, code) {
   const head = fs.readFileSync(entry, "utf8");
@@ -266,34 +266,34 @@ function checkShaking(dir, entry, code) {
   };
   const absent = list("absent").filter((n) => code.includes(n));
   if (absent.length) {
-    return { what: "du code MORT est encore là", detail: absent.join(", ") };
+    return { what: "DEAD code is still there", detail: absent.join(", ") };
   }
   const present = list("present").filter((n) => !code.includes(n));
   if (present.length) {
-    return { what: "du code VIVANT a été supprimé", detail: present.join(", ") };
+    return { what: "LIVE code was removed", detail: present.join(", ") };
   }
   return null;
 }
 
 /**
- * Le bundle doit être du JS sain (zcompiler le reparse sans erreur ni
- * diagnostic) et ne référencer AUCUN nom interne fuité : ses `unresolved`
- * doivent tous être des globals ou des noms importés d'externals.
+ * The bundle must be sane JS (zcompiler re-parses it without error or
+ * diagnostic) and must reference NO leaked internal name: its `unresolved` names
+ * must all be globals or names imported from externals.
  */
 function checkHealth(code, stats) {
   const errs = zcompiler.parseErrors(code);
-  if (errs.length) return { what: "le bundle ne reparse PAS", detail: errs[0].message };
+  if (errs.length) return { what: "the bundle does NOT re-parse", detail: errs[0].message };
   const sem = zcompiler.semantic(code);
   if (sem.diagnostics.length) {
-    return { what: "diagnostic semantic sur le bundle", detail: sem.diagnostics.join(" | ") };
+    return { what: "semantic diagnostic on the bundle", detail: sem.diagnostics.join(" | ") };
   }
-  // Les noms importés en tête du bundle sont des bindings, donc pas unresolved ;
-  // ce qui reste doit être un global connu.
+  // Names imported at the top of the bundle are bindings, so not unresolved;
+  // whatever remains must be a known global.
   const leaked = [...sem.unresolved].filter((n) => !GLOBALS.has(n));
   if (leaked.length) {
-    return { what: "des noms INTERNES fuient", detail: leaked.join(", ") };
+    return { what: "INTERNAL names are leaking", detail: leaked.join(", ") };
   }
-  if (stats.modules < 1) return { what: "bundle vide" };
+  if (stats.modules < 1) return { what: "empty bundle" };
   return null;
 }
 
@@ -304,7 +304,7 @@ const GLOBALS = new Set([
   "BigInt", "Infinity", "NaN", "undefined", "URL", "URLSearchParams", "Buffer",
   "setTimeout", "clearTimeout", "setInterval", "clearInterval", "queueMicrotask",
   "structuredClone", "TextEncoder", "TextDecoder", "fetch", "AbortController",
-  // Host / feature-detection : du vrai code (lodash…) teste leur existence.
+  // Host / feature detection: real code (lodash…) tests for their existence.
   "Function", "ArrayBuffer", "DataView", "Uint8Array", "Float64Array", "parseInt",
   "parseFloat", "isNaN", "isFinite", "encodeURIComponent", "decodeURIComponent",
   "global", "self", "window", "document", "module", "exports", "require",
@@ -316,19 +316,19 @@ function diff(expected, actual) {
   const b = actual.split("\n");
   for (let i = 0; i < Math.max(a.length, b.length); i++) {
     if (a[i] !== b[i]) {
-      return `ligne ${i + 1}\n        attendu : ${JSON.stringify(a[i] ?? null)}\n        obtenu  : ${JSON.stringify(b[i] ?? null)}`;
+      return `line ${i + 1}\n        expected: ${JSON.stringify(a[i] ?? null)}\n        got     : ${JSON.stringify(b[i] ?? null)}`;
     }
   }
-  return "(longueurs différentes)";
+  return "(different lengths)";
 }
 
-// ---- les refus : l'erreur EST le comportement attendu ----
+// ---- refusals: the error IS the expected behaviour ----
 
 function checkRefusal(dir) {
   const name = path.basename(dir);
   const entry = entryOf(dir);
   const expected = (fs.readFileSync(entry, "utf8").match(/expect-error:\s*(.+)/) ?? [])[1];
-  if (!expected) return record(name, "en-tête `// expect-error: …` manquant");
+  if (!expected) return record(name, "missing `// expect-error: …` header");
 
   let message = null;
   try {
@@ -337,14 +337,14 @@ function checkRefusal(dir) {
     message = err.message;
   }
   if (message === null) {
-    return record(name, `AURAIT DÛ être refusé (${expected})`, "bundle() a réussi");
+    return record(name, `SHOULD HAVE been refused (${expected})`, "bundle() succeeded");
   }
-  // Le message doit expliquer, pas seulement échouer.
+  // The message must explain, not merely fail.
   if (message.split("\n").length < 2) {
-    return record(name, "refus sans explication", message);
+    return record(name, "refusal without explanation", message);
   }
   pass++;
-  console.log(`  ${GREEN}✔${OFF} ${name.padEnd(15)} ${DIM}refusé : ${message.split("\n")[0]}${OFF}`);
+  console.log(`  ${GREEN}✔${OFF} ${name.padEnd(15)} ${DIM}refused: ${message.split("\n")[0]}${OFF}`);
 }
 
 function record(name, what, detail) {
@@ -363,20 +363,20 @@ const dirsIn = (root) =>
     .filter(wanted)
     .sort();
 
-console.log(`\n── projets : l'original et le bundle doivent dire la MÊME chose ──`);
+console.log(`\n── projects: the original and the bundle must say the SAME thing ──`);
 for (const dir of dirsIn(PROJECTS)) checkProject(dir);
 
 const refusalDirs = dirsIn(REFUSALS);
 if (refusalDirs.length) {
-  console.log(`\n── refus : chaque limite v0.2 doit produire une erreur CLAIRE ──`);
+  console.log(`\n── refusals: every limitation must produce a CLEAR error ──`);
   for (const dir of refusalDirs) checkRefusal(dir);
 }
 
 const total = pass + failures.length;
-console.log(`\n${pass}/${total}${failures.length ? "" : "  — le bundle dit exactement ce que dit le projet"}\n`);
+console.log(`\n${pass}/${total}${failures.length ? "" : "  — the bundle says exactly what the project says"}\n`);
 
 if (failures.length) {
-  console.log("── Échecs ──");
+  console.log("── Failures ──");
   for (const f of failures) {
     console.log(`  ${f.name} : ${f.what}`);
     if (f.detail) console.log(`      ${f.detail.split("\n").join("\n      ")}`);

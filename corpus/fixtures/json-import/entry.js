@@ -1,7 +1,7 @@
-// Import attributes (ES2025). Les assets viennent de PAQUETS : en v0.1 la table
-// de résolution s'arrête à .ts/.tsx/.js/.jsx/.mjs, donc un './x.json' relatif ne
-// résout pas (les loaders d'assets, c'est la v0.5). Les specifiers nus, eux,
-// deviennent des externals — et le graphe continue.
+// Import attributes (ES2025). The assets come from PACKAGES: the resolution
+// table stops at .ts/.tsx/.js/.jsx/.mjs, so a relative './x.json' does not
+// resolve (asset loaders come later). Bare specifiers, on the other hand, become
+// externals — and the graph carries on.
 import config from '@app/config/data.json' with { type: 'json' };
 import 'normalize.css/normalize.css' with { type: 'css' };
 import * as data from 'vendor-data' with { type: 'json' };
@@ -9,6 +9,6 @@ import * as data from 'vendor-data' with { type: 'json' };
 export { entries } from 'vendor-entries' with { type: 'json' };
 export * as legacy from 'vendor-legacy' assert { type: 'json' };
 
-// Et du vrai code local à côté, qui doit être suivi normalement.
+// And real local code alongside, which must be followed normally.
 import { code } from './code.js';
 export const out = { config, data, code };

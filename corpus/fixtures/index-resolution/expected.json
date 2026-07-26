@@ -1,11 +1,31 @@
 {
-  "why": "Resolution de dossier : `./utils` -> utils/index.ts. Le piege est widgets/ qui a index.js ET index.ts : la table impose index.ts (la source, pas la sortie compilee a cote).",
+  "why": "Directory resolution: `./utils` -> utils/index.ts. The trap is widgets/, which has both index.js AND index.ts: the table mandates index.ts (the source, not the compiled output next to it).",
   "entry": "entry.js",
-  "modules": ["entry.js", "utils/index.ts", "utils/inner.ts", "widgets/index.ts"],
+  "modules": [
+    "entry.js",
+    "utils/index.ts",
+    "utils/inner.ts",
+    "widgets/index.ts"
+  ],
   "edges": [
-    { "from": "entry.js", "to": "utils/index.ts", "specifier": "./utils", "kind": "import" },
-    { "from": "entry.js", "to": "widgets/index.ts", "specifier": "./widgets", "kind": "import" },
-    { "from": "utils/index.ts", "to": "utils/inner.ts", "specifier": "./inner.ts", "kind": "import" }
+    {
+      "from": "entry.js",
+      "to": "utils/index.ts",
+      "specifier": "./utils",
+      "kind": "import"
+    },
+    {
+      "from": "entry.js",
+      "to": "widgets/index.ts",
+      "specifier": "./widgets",
+      "kind": "import"
+    },
+    {
+      "from": "utils/index.ts",
+      "to": "utils/inner.ts",
+      "specifier": "./inner.ts",
+      "kind": "import"
+    }
   ],
   "externals": [],
   "cycles": []

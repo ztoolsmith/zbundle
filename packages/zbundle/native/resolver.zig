@@ -1,21 +1,20 @@
-//! Le RESOLVER : `(fromDir, specifier)` → un chemin absolu canonique, ou
-//! « external », ou une erreur qui dit exactement ce qui a été essayé.
+//! The RESOLVER: `(fromDir, specifier)` -> a canonical absolute path, or
+//! "external", or an error that says exactly what was tried.
 //!
-//! Périmètre v0.1 — **les specifiers RELATIFS seulement** (`./x`, `../y/z`) et
-//! les chemins absolus. Un specifier NU (`react`, `lodash/merge`, `node:fs`)
-//! n'est PAS une erreur : il est marqué **external** et le graphe continue.
-//! C'est le comportement `--external` d'esbuild, et c'est honnête : la
-//! résolution `node_modules` (le champ `exports`, les conditions, `main`/
-//! `module`, les self-references, le hoisting…) est un chantier à elle seule
-//! — c'est la v0.5.
+//! Scope: **RELATIVE specifiers only** (`./x`, `../y/z`) and absolute paths. A
+//! BARE specifier (`react`, `lodash/merge`, `node:fs`) is NOT an error: it is
+//! marked **external** and the graph moves on. That is esbuild's `--external`
+//! behaviour, and it is honest: `node_modules` resolution (the `exports` field,
+//! conditions, `main`/`module`, self-references, hoisting...) is a project of
+//! its own, planned for later.
 //!
-//! Ne dépend de RIEN d'autre que la stdlib : pas de zcompiler ici (résoudre un
-//! chemin n'est pas compiler), pas de zignapi (aucune notion de JS).
+//! Depends on NOTHING but the stdlib: no zcompiler here (resolving a path is not
+//! compiling), no zignapi (no notion of JS).
 //!
-//! **L'accès disque passe par `io: std.Io`** (l'interface d'I/O de Zig 0.16),
-//! jamais par un appel système en dur. Conséquence directe : porter zbundle sur
-//! un FS virtuel (le backend wasm, un cache mémoire, un watcher) = fournir un
-//! autre `Io`, sans toucher une ligne du resolver.
+//! **Disk access goes through `io: std.Io`** (Zig 0.16's I/O interface), never
+//! through a hard-coded syscall. Direct consequence: porting zbundle onto a
+//! virtual filesystem (a wasm backend, an in-memory cache, a watcher) means
+//! supplying a different `Io`, without touching a single line of the resolver.
 
 const std = @import("std");
 
@@ -23,22 +22,21 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const Dir = std.Io.Dir;
 
-/// La table d'extensions, dans l'ORDRE D'ESSAI. L'ordre est un **contrat**
-/// (testé cas par cas) : `./x` doit trouver `x.ts` AVANT `x.js` — un projet TS
-/// qui a compilé un `x.js` à côté de son `x.ts` doit voir la source, pas la
-/// sortie. Même ordre que le `resolveExtensions` d'esbuild, sans `.css`/`.json`
-/// (pas de loaders d'assets en v0.1).
+/// The extension table, in TRY ORDER. The order is a **contract** (tested case
+/// by case): `./x` must find `x.ts` BEFORE `x.js` — a TS project that compiled
+/// an `x.js` next to its `x.ts` must see the source, not the output. Same order
+/// as esbuild's `resolveExtensions`, minus `.css`/`.json` (no asset loaders).
 pub const EXTENSIONS = [_][]const u8{ ".ts", ".tsx", ".js", ".jsx", ".mjs" };
 
-/// Le format d'un module, déduit de son EXTENSION (comme esbuild/oxc — c'est
-/// aussi ce que fait le harnais de zcompiler). Pilote le mode de parse.
+/// A module's format, derived from its EXTENSION (like esbuild/oxc — and like
+/// zcompiler's own harness). Drives the parse mode.
 pub const Format = enum {
     js,
     jsx,
     ts,
     tsx,
 
-    /// Les deux flags que `zcompiler.parseWith(arena, src, jsx, ts)` attend.
+    /// The two flags `zcompiler.parseWith(arena, src, jsx, ts)` expects.
     pub fn flags(self: Format) struct { jsx: bool, ts: bool } {
         return switch (self) {
             .js => .{ .jsx = false, .ts = false },
@@ -49,7 +47,7 @@ pub const Format = enum {
     }
 };
 
-/// `.ts` → ts, `.tsx` → ts+jsx, `.jsx` → jsx, `.js`/`.mjs` (et le reste) → js.
+/// `.ts` -> ts, `.tsx` -> ts+jsx, `.jsx` -> jsx, `.js`/`.mjs` (and the rest) -> js.
 pub fn formatOf(path: []const u8) Format {
     const ext = std.fs.path.extension(path);
     if (std.mem.eql(u8, ext, ".ts")) return .ts;
@@ -59,9 +57,9 @@ pub fn formatOf(path: []const u8) Format {
 }
 
 pub const Kind = enum {
-    /// Un fichier trouvé sur le disque. `path` = son chemin ABSOLU CANONIQUE.
+    /// A file found on disk. `path` = its CANONICAL ABSOLUTE path.
     file,
-    /// Un specifier nu, laissé au runtime. `path` = le specifier tel quel.
+    /// A bare specifier, left to the runtime. `path` = the specifier as written.
     external,
 };
 
@@ -69,17 +67,17 @@ pub const Resolution = struct { kind: Kind, path: []const u8 };
 
 pub const Error = error{ NotFound, OutOfMemory };
 
-/// Ce qu'on a essayé quand ça a échoué. Rempli par `resolve` sur `error.NotFound`
-/// (et laissé vide sinon). `tried` est dans l'ordre exact des tentatives : c'est
-/// LE message qui fait gagner du temps à l'utilisateur.
+/// What was tried when it failed. Filled in by `resolve` on `error.NotFound`
+/// (left empty otherwise). `tried` is in exact attempt order: this is THE
+/// message that saves the user time.
 pub const Diagnostic = struct {
     specifier: []const u8 = "",
     tried: []const []const u8 = &.{},
 };
 
-/// Un specifier NU = tout ce qui n'est ni relatif (`./`, `../`) ni absolu.
-/// Couvre `react`, `@scope/pkg`, `lodash/merge`, `node:fs`, `#alias` (imports
-/// map) — tous externals en v0.1.
+/// A BARE specifier = anything neither relative (`./`, `../`) nor absolute.
+/// Covers `react`, `@scope/pkg`, `lodash/merge`, `node:fs`, `#alias` (import
+/// maps) — all external for now.
 pub fn isBare(specifier: []const u8) bool {
     if (specifier.len == 0) return false;
     if (std.mem.startsWith(u8, specifier, "./")) return false;
@@ -88,18 +86,18 @@ pub fn isBare(specifier: []const u8) bool {
     return !std.fs.path.isAbsolute(specifier);
 }
 
-/// Résout `specifier` depuis `from_dir`.
+/// Resolves `specifier` from `from_dir`.
 ///
-/// L'ordre d'essai (le contrat de la v0.1, cf. la table du CLAUDE.md) :
-///   1. specifier NU → `.external`, on s'arrête là (jamais d'erreur) ;
-///   2. le chemin TEL QUEL s'il porte une extension connue ;
-///   3. sinon `<chemin>.ts`, `.tsx`, `.js`, `.jsx`, `.mjs` (dans cet ordre) ;
-///   4. puis `<chemin>/index.<ext>` dans le MÊME ordre (résolution de dossier).
+/// Try order (the contract):
+///   1. BARE specifier -> `.external`, stop there (never an error);
+///   2. the path AS IS if it carries a known extension;
+///   3. otherwise `<path>.ts`, `.tsx`, `.js`, `.jsx`, `.mjs` (in that order);
+///   4. then `<path>/index.<ext>` in the SAME order (directory resolution).
 ///
-/// Le chemin rendu est **canonique** (`realPath` : liens symboliques suivis,
-/// casse corrigée sur un FS insensible comme macOS). C'est ce qui garantit
-/// qu'un même fichier atteint par deux chemins différents soit UN seul module
-/// dans le graphe.
+/// The returned path is **canonical** (`realPath`: symlinks followed, case
+/// corrected on a case-insensitive filesystem such as macOS). That is what
+/// guarantees that one file reached by two different paths is ONE module in the
+/// graph.
 pub fn resolve(
     a: Allocator,
     io: Io,
@@ -128,7 +126,7 @@ pub fn resolve(
     return error.NotFound;
 }
 
-/// Note le candidat dans `tried` et renvoie la résolution s'il existe.
+/// Records the candidate in `tried` and returns the resolution if it exists.
 fn tryFile(a: Allocator, io: Io, cand: []const u8, tried: *std.ArrayList([]const u8)) Error!?Resolution {
     try tried.append(a, cand);
     const real = canonical(a, io, cand) catch return null;
@@ -143,24 +141,24 @@ fn hasKnownExtension(path: []const u8) bool {
     return false;
 }
 
-/// Le chemin canonique de `path` s'il désigne un FICHIER existant. Un dossier
-/// est un échec (`./dir` doit tomber dans la branche `index.<ext>`, pas
-/// « résoudre » vers le dossier lui-même).
+/// The canonical path of `path` if it names an existing FILE. A directory is a
+/// failure (`./dir` must fall through to the `index.<ext>` branch, not "resolve"
+/// to the directory itself).
 fn canonical(a: Allocator, io: Io, path: []const u8) ![]const u8 {
     const st = try Dir.cwd().statFile(io, path, .{});
     if (st.kind != .file) return error.IsDir;
     return Dir.cwd().realPathFileAlloc(io, path, a);
 }
 
-/// Lit un fichier source. Vit ici (et pas dans graph.zig) parce que c'est l'autre
-/// moitié du même contrat : le resolver est le SEUL point de contact avec le
-/// disque. `max_bytes` borne la lecture (un fichier source n'est pas un blob).
+/// Reads a source file. Lives here (rather than in graph.zig) because it is the
+/// other half of the same contract: the resolver is the ONLY point of contact
+/// with the disk. `max_bytes` bounds the read (a source file is not a blob).
 pub fn readFile(a: Allocator, io: Io, path: []const u8, max_bytes: usize) ![]u8 {
     return Dir.cwd().readFileAlloc(io, path, a, .limited(max_bytes));
 }
 
-/// Le message d'erreur complet : le specifier, le demandeur, et TOUS les chemins
-/// essayés dans l'ordre. `importer` peut être vide (résolution isolée).
+/// The full error message: the specifier, the importer, and ALL attempted paths
+/// in order. `importer` may be empty (standalone resolution).
 pub fn formatError(a: Allocator, diag: Diagnostic, importer: []const u8) Allocator.Error![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(a, try std.fmt.allocPrint(a, "cannot resolve '{s}'", .{diag.specifier}));
@@ -174,8 +172,8 @@ pub fn formatError(a: Allocator, diag: Diagnostic, importer: []const u8) Allocat
 
 // ------------------------------------------------------------------ tests
 
-/// Un dossier temporaire réel : le resolver touche le disque, donc les tests
-/// aussi (un faux FS mentirait sur la casse et les liens symboliques).
+/// A real temporary directory: the resolver touches the disk, so the tests do
+/// too (a fake filesystem would lie about case and symlinks).
 const Sandbox = struct {
     tmp: std.testing.TmpDir,
     arena: std.heap.ArenaAllocator,
@@ -202,9 +200,9 @@ const Sandbox = struct {
         if (std.fs.path.dirname(sub_path)) |dir| try self.tmp.dir.createDirPath(io, dir);
         try self.tmp.dir.writeFile(io, .{ .sub_path = sub_path, .data = contents });
     }
-    /// Résout depuis la racine du sandbox et renvoie le chemin RELATIF trouvé
-    /// (comparaisons lisibles, indépendantes du chemin du tmpdir). Le résultat
-    /// étant canonique, il commence forcément par `root` + un séparateur.
+    /// Resolves from the sandbox root and returns the RELATIVE path found
+    /// (readable comparisons, independent of the tmpdir path). The result being
+    /// canonical, it necessarily starts with `root` plus a separator.
     fn rel(self: *Sandbox, specifier: []const u8) ![]const u8 {
         var diag: Diagnostic = .{};
         const r = try resolve(self.a(), io, self.root, specifier, &diag);
@@ -214,7 +212,7 @@ const Sandbox = struct {
     }
 };
 
-test "l'ordre de la table : .ts gagne sur .js" {
+test "table order: .ts wins over .js" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("x.js", "");
@@ -222,8 +220,8 @@ test "l'ordre de la table : .ts gagne sur .js" {
     try std.testing.expectEqualStrings("x.ts", try s.rel("./x"));
 }
 
-test "l'ordre de la table, cas par cas (.ts > .tsx > .js > .jsx > .mjs)" {
-    // Chaque paire : le gagnant attendu, puis un fichier de rang inférieur.
+test "table order, case by case (.ts > .tsx > .js > .jsx > .mjs)" {
+    // Each pair: the expected winner, then a lower-ranked file.
     const pairs = [_][2][]const u8{
         .{ "a.ts", "a.tsx" },
         .{ "b.tsx", "b.js" },
@@ -240,14 +238,14 @@ test "l'ordre de la table, cas par cas (.ts > .tsx > .js > .jsx > .mjs)" {
     }
 }
 
-test "extension omise : le seul candidat présent gagne" {
+test "omitted extension: the only present candidate wins" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("only.mjs", "");
     try std.testing.expectEqualStrings("only.mjs", try s.rel("./only"));
 }
 
-test "extension explicite : le chemin tel quel" {
+test "explicit extension: the path as is" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("x.ts", "");
@@ -255,7 +253,7 @@ test "extension explicite : le chemin tel quel" {
     try std.testing.expectEqualStrings("x.js", try s.rel("./x.js"));
 }
 
-test "résolution de dossier : ./dir -> dir/index.ts" {
+test "directory resolution: ./dir -> dir/index.ts" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("dir/index.js", "");
@@ -264,7 +262,7 @@ test "résolution de dossier : ./dir -> dir/index.ts" {
     try std.testing.expectEqualStrings(want, try s.rel("./dir"));
 }
 
-test "un fichier voisin gagne sur le dossier du même nom" {
+test "a sibling file wins over a directory of the same name" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("dir/index.ts", "");
@@ -272,7 +270,7 @@ test "un fichier voisin gagne sur le dossier du même nom" {
     try std.testing.expectEqualStrings("dir.ts", try s.rel("./dir"));
 }
 
-test "`..` et `.` sont normalisés (un seul chemin canonique)" {
+test "`..` and `.` are normalized (a single canonical path)" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("sub/deep/mod.ts", "");
@@ -281,7 +279,7 @@ test "`..` et `.` sont normalisés (un seul chemin canonique)" {
     try std.testing.expectEqualStrings(a, b);
 }
 
-test "specifier nu -> external (jamais une erreur)" {
+test "bare specifier -> external (never an error)" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     for ([_][]const u8{ "react", "@scope/pkg", "lodash/merge", "node:fs" }) |spec| {
@@ -292,7 +290,7 @@ test "specifier nu -> external (jamais une erreur)" {
     }
 }
 
-test "isBare : la frontière relatif / nu" {
+test "isBare: the relative / bare boundary" {
     try std.testing.expect(isBare("react"));
     try std.testing.expect(isBare("@a/b"));
     try std.testing.expect(!isBare("./a"));
@@ -301,12 +299,12 @@ test "isBare : la frontière relatif / nu" {
     try std.testing.expect(!isBare("."));
 }
 
-test "introuvable : l'erreur liste TOUS les chemins essayés, dans l'ordre" {
+test "not found: the error lists ALL attempted paths, in order" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     var diag: Diagnostic = .{};
     try std.testing.expectError(error.NotFound, resolve(s.a(), Sandbox.io, s.root, "./missing", &diag));
-    // 5 extensions + 5 index.<ext> = 10 candidats, dans l'ordre de la table.
+    // 5 extensions + 5 index.<ext> = 10 candidates, in table order.
     try std.testing.expectEqual(@as(usize, 10), diag.tried.len);
     try std.testing.expect(std.mem.endsWith(u8, diag.tried[0], "missing.ts"));
     try std.testing.expect(std.mem.endsWith(u8, diag.tried[4], "missing.mjs"));
@@ -317,7 +315,7 @@ test "introuvable : l'erreur liste TOUS les chemins essayés, dans l'ordre" {
     try std.testing.expect(std.mem.indexOf(u8, msg, "tried:") != null);
 }
 
-test "un dossier ne résout pas vers lui-même (sans index)" {
+test "a directory does not resolve to itself (without an index)" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("dir/other.ts", "");
@@ -325,7 +323,7 @@ test "un dossier ne résout pas vers lui-même (sans index)" {
     try std.testing.expectError(error.NotFound, resolve(s.a(), Sandbox.io, s.root, "./dir", &diag));
 }
 
-test "formatOf : l'extension décide du mode de parse" {
+test "formatOf: the extension decides the parse mode" {
     try std.testing.expectEqual(Format.ts, formatOf("/a/b.ts"));
     try std.testing.expectEqual(Format.tsx, formatOf("/a/b.tsx"));
     try std.testing.expectEqual(Format.jsx, formatOf("/a/b.jsx"));

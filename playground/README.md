@@ -1,126 +1,125 @@
-# playground — le laboratoire
+# playground — the laboratory
 
-C'est ici que zbundle se teste **en l'exécutant**, pas seulement en le lisant.
+This is where zbundle is tested by **running it**, not just by reading it.
 
-## `run.mjs` — LE JUGE
+## `run.mjs` — THE JUDGE
 
 ```bash
-node run.mjs                 # tout
-node run.mjs diamond cycle   # ces projets seulement
-node run.mjs --keep          # garde les .bundle.mjs générés, pour les lire
+node run.mjs                 # everything
+node run.mjs diamond cycle   # only those projects
+node run.mjs --keep          # keep the generated bundles, to read them
 ```
 
-Pour chaque projet de `projects/` :
+For each project in `projects/`:
 
-1. exécuter **l'original** dans Node → stdout de référence
-2. **bundler** avec zbundle → un seul fichier
-3. exécuter **le bundle** dans Node → stdout du bundle
-4. **diff**. Identique = vert.
+1. run **the original** in Node → reference stdout
+2. **bundle** it with zbundle → a single file
+3. run **the bundle** in Node → bundle stdout
+4. **diff**. Identical = green.
 
-C'est le round-trip du bundler — le pendant exact du `parse ∘ print` de
-zcompiler. Un bundler qui produit du code qui *tourne* mais dit autre chose est
-un bundler cassé ; c'est la seule vérification qui ne peut pas se tromper
-elle-même.
+This is the bundler's round-trip — the exact counterpart of zcompiler's
+`parse ∘ print`. A bundler that produces code which *runs* but says something
+else is a broken bundler; this is the only check that cannot fool itself.
 
-En bonus, gratuitement, sur chaque bundle : il **reparse** par zcompiler sans
-erreur, passe le semantic sans diagnostic, et ne laisse **fuir aucun nom
-interne** (tous ses `unresolved` sont des globals connus).
+As a free bonus, on every bundle: it **re-parses** with zcompiler without error,
+passes semantic analysis with no diagnostics, and **leaks no internal name**
+(all its `unresolved` names are known globals).
 
-**Et depuis la v0.3**, le juge vérifie aussi le **tree-shaking**, via deux
-en-têtes optionnels dans le `main.*` :
+The judge also verifies the **tree-shaking**, through two optional headers in
+`main.*`:
 
 ```js
 // expect-absent: unused2 unused7 helperOfUnused
 // expect-present: keptOne sharedHelper
 ```
 
-C'est indispensable : un stdout identique prouve que rien de **vivant** n'a été
-supprimé — il ne prouve pas que le **mort** a disparu.
+This is essential: identical stdout proves that nothing **live** was removed —
+it does not prove that the **dead** was.
 
-### Le témoin-importeur
+### The importing witness
 
-Exécuter le bundle comme un script **ignore ses `export`**. Un projet qui
-déclare des exports fait donc générer un module qui **importe le bundle** et
-vérifie son contrat :
+Running a bundle as a script **ignores its `export`s**. So a project that
+declares exports makes the harness generate a module that **imports the bundle**
+and checks its contract:
 
 ```js
 // expect-exports: jamaisUtilisee:function ns:object
 // expect-call: jamaisUtilisee(42) -> inutile 42
 ```
 
-`Object.keys` + `typeof` de chaque nom, puis **appel réel** de ceux qu'un
-`expect-call` désigne (arguments en JSON). Les exports sont un contrat ; ils se
-testent comme tel — pas par effet de bord.
+`Object.keys` plus `typeof` for every name, then an **actual call** of the ones
+an `expect-call` designates (arguments in JSON). Exports are a contract; they get
+tested as one — not as a side effect.
 
-Puis `refusals/` : chaque limite de la v0.2 **doit** produire une erreur, et une
-erreur qui explique (≥ 2 lignes). Un bundle silencieusement faux serait pire
-qu'un refus.
+Then `refusals/`: every documented limitation **must** produce an error, and one
+that explains itself (≥ 2 lines). A silently wrong bundle would be worse than a
+refusal.
 
-## `inspect.mjs` — l'œil
-
-```bash
-node inspect.mjs                  # liste les projets
-node inspect.mjs barrel           # le bundle, en entier
-node inspect.mjs barrel --graph   # + le graphe de modules
-node inspect.mjs barrel --run     # + l'exécution
-node inspect.mjs ../un/main.js    # n'importe quelle entry
-```
-
-Pour **comprendre ce que le linker a fait** : voir les collisions renommées
-(`helper`, `helper$1`, `helper$2`), les namespaces matérialisés, les modules qui
-n'émettent rien (un barrel pur), l'ordre topologique. Le pendant du debug
-printer de zcompiler, qui montrait l'AST.
-
-## Ajouter un cas — 30 secondes
+## `inspect.mjs` — the eye
 
 ```bash
-mkdir projects/mon-cas
-$EDITOR projects/mon-cas/main.js     # + les modules qu'il importe
-node run.mjs mon-cas
+node inspect.mjs                  # list the projects
+node inspect.mjs barrel           # the whole bundle
+node inspect.mjs barrel --graph   # + the module graph
+node inspect.mjs barrel --run     # + execution
+node inspect.mjs barrel --dead    # + what shaking removed (module, line, reason)
+node inspect.mjs ../some/main.js  # any entry
 ```
 
-**La seule règle** : `main.*` doit `console.log` un résultat **déterministe**
-(pas d'horloge, pas d'aléatoire, pas d'ordre de `Set`/`Map` fragile). Le juge
-compare deux stdout : tout ce qui varie d'un run à l'autre le fait échouer pour
-de mauvaises raisons.
+To **understand what the linker did**: see the renamed collisions (`helper`,
+`helper$1`, `helper$2`), the materialized namespaces, the modules that emit
+nothing (a pure barrel), the topological order. The counterpart of zcompiler's
+debug printer, which showed the AST.
 
-Pour un cas qui doit **échouer** :
+## Adding a case — 30 seconds
 
 ```bash
-mkdir refusals/mon-refus
-echo '// expect-error: ce que zbundle doit refuser' > refusals/mon-refus/main.js
+mkdir projects/my-case
+$EDITOR projects/my-case/main.js     # plus the modules it imports
+node run.mjs my-case
 ```
 
-## Les projets
+**The only rule**: `main.*` must `console.log` a **deterministic** result (no
+clock, no randomness, no fragile `Set`/`Map` ordering). The judge compares two
+stdouts: anything that varies between runs makes it fail for the wrong reason.
 
-| projet | ce qu'il piège |
+For a case that must **fail**:
+
+```bash
+mkdir refusals/my-refusal
+echo '// expect-error: what zbundle must refuse' > refusals/my-refusal/main.js
+```
+
+## The projects
+
+| project | what it traps |
 |---|---|
-| `diamond` | le module partagé est évalué **une seule fois** (un compteur le prouve) |
-| `cycle` | deux fonctions mutuellement récursives, à travers un cycle d'imports |
-| `barrel` | re-exports en chaîne, `export * as ns`, `export *`, et **trois** `helper` en collision |
-| `ts-jsx` | la chaîne zcompiler complète : types effacés + JSX abaissé, **avant** le linking |
-| `external` | `node:fs`/`node:path` réels, importés par deux modules → un seul import |
-| `default-heavy` | les trois formes d'`export default` (expression anonyme, classe, binding) |
-| `live-binding` | un `export let` réassigné : le hoisting le gère **naturellement** |
-| `real-lodash` | le monde réel — **172 modules** de lodash-es, résultats vérifiés |
-| `shake-barrel` | **le cas d'école** : 1 fonction importée sur 20 → 24 modules deviennent 3 |
-| `shake-sideeffect` | un module qui patche un global : importé pour son effet, il **survit** |
-| `shake-diamond` | un diamant à moitié mort : le partagé survit, la branche morte tombe |
-| `shake-class` | classe pure jamais instanciée (éliminée) vs champ statique impur (gardée) |
-| `shake-star` | `export *` partiellement consommé |
-| `shake-getter` | le piège : `obj.prop` peut être un getter, donc c'est conservé |
-| `export-unused` | le cas limite : **exporté + zéro référence** survit, son jumeau privé meurt |
-| `export-forms` | les **7 formes** d'export, toutes appelées à travers le bundle importé |
+| `diamond` | the shared module is evaluated **exactly once** (a counter proves it) |
+| `cycle` | two mutually recursive functions, across an import cycle |
+| `barrel` | chained re-exports, `export * as ns`, `export *`, and **three** colliding `helper`s |
+| `ts-jsx` | the full zcompiler chain: types erased and JSX lowered, **before** linking |
+| `external` | real `node:fs`/`node:path`, imported by two modules → a single import |
+| `default-heavy` | the three forms of `export default` (anonymous expression, class, binding) |
+| `live-binding` | a reassigned `export let`: hoisting handles it **naturally** |
+| `real-lodash` | the real world — **172 modules** of lodash-es, results verified |
+| `shake-barrel` | **the textbook case**: 1 function imported out of 20 → 24 modules become 3 |
+| `shake-sideeffect` | a module patching a global: imported for its effect, it **survives** |
+| `shake-diamond` | a half-dead diamond: the shared part lives, the dead branch falls |
+| `shake-class` | a pure never-instantiated class (removed) vs an impure static field (kept) |
+| `shake-star` | `export *` partially consumed |
+| `shake-getter` | the trap: `obj.prop` may be a getter, so it is kept |
+| `export-unused` | the edge case: **exported + zero references** survives, its private twin dies |
+| `export-forms` | the **7 export forms**, all called through the imported bundle |
 
-| refus | la limite v0.2 |
+| refusal | the limitation |
 |---|---|
-| `top-level-await` | rendrait le bundle entier asynchrone |
-| `import-meta` | dépend de l'URL du module, qui n'existe plus après fusion |
-| `dynamic-internal` | `import()` interne = un chunk séparé → c'est le code-splitting (v0.5) |
-| `namespace-live` | l'objet namespace est un **snapshot** : il figerait un binding vivant |
+| `top-level-await` | would make the whole bundle asynchronous |
+| `import-meta` | depends on the module URL, which no longer exists after merging |
+| `dynamic-internal` | an internal `import()` = a separate chunk → code splitting |
+| `namespace-live` | the namespace object is a **snapshot**: it would freeze a live binding |
 
-## Aussi ici
+## Also here
 
-- `index.js` — affiche le **graphe** d'une entry (l'outil de la v0.1).
-- `corpus.js` — le harnais des fixtures `corpus/fixtures/` (`--graph`) et des
-  projets-témoins (`--real`). Comparaison stricte à un `expected.json`.
+- `index.js` — shows the **graph** of an entry.
+- `corpus.js` — the harness for `corpus/fixtures/` (`--graph`) and the real-world
+  projects (`--real`). Strict comparison against an `expected.json`.

@@ -2,7 +2,7 @@
   "name": "playground",
   "version": "0.0.0",
   "private": true,
-  "description": "Bac à sable pour regarder un graphe de modules à la main",
+  "description": "Sandbox to look at module graphs and bundles by hand",
   "scripts": {
     "start": "node index.js",
     "judge": "node run.mjs",

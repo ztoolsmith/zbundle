@@ -1,6 +1,6 @@
-// Importe UNIQUEMENT pour son effet : il n'exporte rien. Le statement est
-// impur -> racine -> il survit. C'est le contrat de `import './x'`.
+// Imported ONLY for its effect: it exports nothing. The statement is impure ->
+// a root -> it survives. That is the contract of `import './x'`.
 globalThis.__PATCHED__ = true;
 
-// Celle-ci est pure et personne ne l'utilise : elle doit disparaitre.
+// This one is pure and nobody uses it: it must disappear.
 export const neverUsedHelper = () => 'mort';

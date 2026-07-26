@@ -1,5 +1,5 @@
-// Un fichier TypeScript ordinaire : types, interface, enum, generiques.
-// zbundle doit tout effacer et n'emettre que le JS.
+// An ordinary TypeScript file: types, interface, enum, generics.
+// zbundle must erase it all and emit only the JS.
 
 interface Task {
   id: number;
@@ -27,9 +27,9 @@ function count<T>(items: readonly T[], keep: Filter<T>): number {
 const faites = count(tasks, (t: Task) => t.done);
 const restantes = count(tasks, (t: Task) => !t.done);
 
-// EXPORTEE depuis l'entry : c'est le contrat public du bundle, donc une RACINE.
-// Elle survit meme si rien ne la reference — zero reference + export est le cas
-// limite exact, et il est couvert par projects/export-unused/.
+// EXPORTED from the entry: this is the bundle's public contract, hence a ROOT.
+// It survives even if nothing references it — zero references + exported is the
+// exact edge case, covered by projects/export-unused/.
 export function jamaisUtilisee(x: number): string {
   return `inutile ${x}`;
 }

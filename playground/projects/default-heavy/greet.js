@@ -1,4 +1,4 @@
-// export default <expression anonyme> : le linker doit lui fabriquer un nom.
+// export default <anonymous expression>: the linker must synthesize a name for it.
 const prefix = 'hello';
 export default function (who) {
   return `${prefix}, ${who}!`;

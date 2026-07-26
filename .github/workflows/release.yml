@@ -1,23 +1,23 @@
 name: Release
 
-# Déclenché quand tu PUBLIES un release GitHub (tag v*, ex. v0.1.0). Le job
-# principal (ci.yml) sert de gate : tout vert ou rien. Ensuite on collecte les
-# binaires des 6 triples (Linux cross-compile les 5 non-Windows ; Windows
-# fournit le .node MSVC), on assemble les paquets, on rejoue la prod simulée,
-# puis on ATTACHE les tarballs au release ET on PUBLIE sur npm.
+# Triggered when you PUBLISH a GitHub release (tag v*, e.g. v0.1.0). The main
+# job (ci.yml) acts as the gate: all green or nothing. Then we collect the
+# binaries for the 6 triples (Linux cross-compiles the 5 non-Windows ones;
+# Windows supplies the MSVC .node), assemble the packages, replay the prod
+# rehearsal, then ATTACH the tarballs to the release AND PUBLISH to npm.
 #
-# Prérequis : un secret `NPM_TOKEN` (npm → Access Tokens, type "Automation")
-# dans Settings → Secrets and variables → Actions du repo.
+# Requires an `NPM_TOKEN` secret (npm -> Access Tokens, "Automation" type) in the
+# repository's Settings -> Secrets and variables -> Actions.
 
 on:
   release:
     types: [published]
-  # Déclenchement manuel de secours (si l'event `release` n'a pas tiré) :
-  # Actions → Release → Run workflow, ou `gh workflow run release.yml -f tag=v0.1.0`.
+  # Manual fallback trigger (if the `release` event did not fire):
+  # Actions -> Release -> Run workflow, or `gh workflow run release.yml -f tag=v0.1.0`.
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag du release à (re)publier — ex. v0.1.0 (le release doit exister)"
+        description: "Tag of the release to (re)publish — e.g. v0.1.0 (it must already exist)"
         required: true
 
 env:
@@ -25,11 +25,11 @@ env:
   RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
 jobs:
-  # Tout le job principal (tests + juge + prod simulée) en préalable.
+  # The whole main job (tests + judge + prod rehearsal) runs first.
   gate:
     uses: ./.github/workflows/ci.yml
 
-  # Linux : les 5 triples darwin/linux + les JS générés (loader + CLI compilé).
+  # Linux: the 5 darwin/linux triples + the generated JS (loader + compiled CLI).
   linux-artifacts:
     needs: gate
     runs-on: ubuntu-latest
@@ -55,29 +55,29 @@ jobs:
       - name: Build zignapi (CLI + module)
         working-directory: zignapi
         run: pnpm install --frozen-lockfile=false && pnpm --filter zignapi build
-      - name: Install zcompiler (module Zig)
+      - name: Install zcompiler (Zig module)
         working-directory: zcompiler
         run: pnpm install --frozen-lockfile=false
       - name: Install zbundle
         working-directory: zbundle
         run: pnpm install --frozen-lockfile=false
 
-      - name: Cross-compile darwin+linux + génère les JS et le CLI
+      - name: Cross-compile darwin+linux + generate the JS and the CLI
         working-directory: zbundle/packages/zbundle
         run: |
-          pnpm build                              # natif hôte + loader + tsc (dist/cli.js)
-          pnpm exec zignapi build --all || true   # les 5 triples cross (win32 échoue ici)
+          pnpm build                              # host native + loader + tsc (dist/cli.js)
+          pnpm exec zignapi build --all || true   # the 5 cross triples (win32 fails here)
           tar czf /tmp/linux.tgz \
             npm/darwin-arm64 npm/darwin-x64 npm/linux-x64-gnu npm/linux-x64-musl npm/linux-arm64-gnu \
             index.js bindings.js index.d.ts dist
 
-      - name: Upload artefacts Linux
+      - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux
           path: /tmp/linux.tgz
 
-  # Windows : le seul binaire que Zig ne cross-compile pas depuis Linux (libc MSVC).
+  # Windows: the only binary Zig cannot cross-compile from Linux (MSVC libc).
   windows-artifacts:
     needs: gate
     runs-on: windows-latest
@@ -116,14 +116,14 @@ jobs:
           pnpm exec zignapi build --target win32-x64-msvc
           tar czf win32.tgz npm/win32-x64-msvc
 
-      - name: Upload artefact Windows
+      - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: win32
           path: zbundle/packages/zbundle/win32.tgz
 
-  # Assemblage : tous les binaires réunis → prepublish → prod simulée → attache
-  # au release + publie sur npm.
+  # Assembly: every binary gathered -> prepublish -> prod rehearsal -> attach to
+  # the release + publish to npm.
   assemble:
     needs: [linux-artifacts, windows-artifacts]
     runs-on: ubuntu-latest
@@ -144,22 +144,22 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: zbundle/pnpm-lock.yaml
-          registry-url: "https://registry.npmjs.org" # écrit le .npmrc pour npm publish
+          registry-url: "https://registry.npmjs.org" # writes .npmrc for npm publish
 
-      # Ici on n'a besoin QUE du CLI de zignapi (tsc), pas de Zig : les binaires
-      # arrivent tout construits par les deux jobs précédents.
-      - name: Build zignapi (CLI seul)
+      # Here we only need zignapi's CLI (tsc), not Zig: the binaries arrive
+      # already built from the two previous jobs.
+      - name: Build zignapi (CLI only)
         working-directory: zignapi
         run: pnpm install --frozen-lockfile=false && pnpm --filter zignapi build:ts
       - name: Install zbundle
         working-directory: zbundle
         run: pnpm install --frozen-lockfile=false
 
-      - name: Récupère les artefacts (Linux + Windows)
+      - name: Fetch the artifacts (Linux + Windows)
         uses: actions/download-artifact@v4
         with: { path: /tmp/artifacts }
 
-      - name: Déballe tous les binaires dans le package
+      - name: Unpack every binary into the package
         working-directory: zbundle/packages/zbundle
         run: |
           tar xzf /tmp/artifacts/linux/linux.tgz -C .
@@ -170,12 +170,12 @@ jobs:
         working-directory: zbundle/packages/zbundle
         run: pnpm exec zignapi prepublish
 
-      # Le paquet PUBLIÉ démarre-t-il ? L'API et la commande, depuis un témoin vide.
-      - name: Prod simulée
+      # Does the PUBLISHED package start? The API and the command, from an empty witness.
+      - name: Prod rehearsal
         working-directory: zbundle/packages/zbundle
         run: node scripts/prod-witness.mjs
 
-      - name: npm pack (principal + plateformes)
+      - name: npm pack (main + platforms)
         working-directory: zbundle/packages/zbundle
         run: |
           mkdir -p /tmp/out
@@ -183,25 +183,25 @@ jobs:
           for d in npm/*/; do (cd "$d" && npm pack --pack-destination /tmp/out); done
           ls -la /tmp/out
 
-      - name: Upload des tarballs (artefact du workflow)
+      - name: Upload the tarballs (workflow artifact)
         uses: actions/upload-artifact@v4
         with:
           name: npm-tarballs
           path: /tmp/out/*.tgz
 
-      - name: Attache les tarballs au release GitHub
+      - name: Attach the tarballs to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" /tmp/out/*.tgz --clobber --repo "${{ github.repository }}"
 
-      - name: Publie sur npm (plateformes d'abord, principal en dernier)
+      - name: Publish to npm (platforms first, main last)
         working-directory: /tmp/out
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          # Les paquets de plateforme d'abord : sinon les optionalDependencies du
-          # principal pointent dans le vide pendant quelques secondes.
-          # --access public : requis pour les scopés (@zbundle/*).
+          # Platform packages first: otherwise the main package's
+          # optionalDependencies point at nothing for a few seconds.
+          # --access public: required for scoped packages (@zbundle/*).
           for t in *binding*.tgz; do npm publish "$t" --access public; done
-          # Puis le principal (le seul tarball sans "binding" dans le nom).
+          # Then the main one (the only tarball without "binding" in its name).
           for t in *.tgz; do case "$t" in *binding*) ;; *) npm publish "$t" --access public ;; esac; done

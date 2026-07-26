@@ -1,16 +1,56 @@
 {
-  "why": "Un projet melange : .tsx (JSX + types) -> .jsx -> .ts -> .js. Chaque fichier doit etre parse dans SON mode (les jumeaux de zcompiler), sinon le JSX ou les types font echouer le parse et les imports disparaissent. Zero erreur de parse est l'assertion cle. DEPUIS LA v0.2 : le graphe normalise chaque module en JS pur (strip types + lower JSX) AVANT d'extraire ses dependances — or le transform JSX INJECTE `import { jsx } from 'react/jsx-runtime'`. Le voir ici est le comportement CORRECT : un bundler qui l'ignorerait emettrait du code referencant `jsx` sans jamais l'importer.",
+  "why": "A mixed project: .tsx (JSX + types) -> .jsx -> .ts -> .js. Each file must be parsed in ITS OWN mode, otherwise JSX or types break the parse and the imports vanish. Zero parse errors is the key assertion. The graph normalizes each module to plain JS (strip types + lower JSX) BEFORE extracting its dependencies — and the JSX transform INJECTS `import { jsx } from 'react/jsx-runtime'`. Seeing it here is the CORRECT behaviour: a bundler ignoring it would emit code referencing `jsx` without ever importing it.",
   "entry": "entry.tsx",
-  "modules": ["entry.tsx", "row.jsx", "data.ts", "format.js"],
-  "formats": { "entry.tsx": "tsx", "row.jsx": "jsx", "data.ts": "ts", "format.js": "js" },
-  "edges": [
-    { "from": "entry.tsx", "external": "react/jsx-runtime", "specifier": "react/jsx-runtime", "kind": "import" },
-    { "from": "entry.tsx", "to": "row.jsx", "specifier": "./row.jsx", "kind": "import" },
-    { "from": "entry.tsx", "to": "data.ts", "specifier": "./data.ts", "kind": "import" },
-    { "from": "row.jsx", "external": "react/jsx-runtime", "specifier": "react/jsx-runtime", "kind": "import" },
-    { "from": "row.jsx", "to": "format.js", "specifier": "./format.js", "kind": "import" }
+  "modules": [
+    "entry.tsx",
+    "row.jsx",
+    "data.ts",
+    "format.js"
   ],
-  "externals": [{ "specifier": "react/jsx-runtime", "count": 2 }],
+  "formats": {
+    "entry.tsx": "tsx",
+    "row.jsx": "jsx",
+    "data.ts": "ts",
+    "format.js": "js"
+  },
+  "edges": [
+    {
+      "from": "entry.tsx",
+      "external": "react/jsx-runtime",
+      "specifier": "react/jsx-runtime",
+      "kind": "import"
+    },
+    {
+      "from": "entry.tsx",
+      "to": "row.jsx",
+      "specifier": "./row.jsx",
+      "kind": "import"
+    },
+    {
+      "from": "entry.tsx",
+      "to": "data.ts",
+      "specifier": "./data.ts",
+      "kind": "import"
+    },
+    {
+      "from": "row.jsx",
+      "external": "react/jsx-runtime",
+      "specifier": "react/jsx-runtime",
+      "kind": "import"
+    },
+    {
+      "from": "row.jsx",
+      "to": "format.js",
+      "specifier": "./format.js",
+      "kind": "import"
+    }
+  ],
+  "externals": [
+    {
+      "specifier": "react/jsx-runtime",
+      "count": 2
+    }
+  ],
   "cycles": [],
   "parse_errors": 0
 }

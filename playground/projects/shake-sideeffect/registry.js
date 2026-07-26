@@ -1,5 +1,5 @@
 const registry = [];
-// Impur (un appel) : racine, meme si `registry` etait autrement inutilise.
+// Impure (a call): a root, even if `registry` were otherwise unused.
 registry.push('enregistre-a-l-import');
 
 export const readRegistry = () => registry.join(',');

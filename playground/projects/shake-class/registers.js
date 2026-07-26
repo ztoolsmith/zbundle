@@ -1,6 +1,6 @@
-// Un champ statique qui APPELLE : la classe s'enregistre a la definition.
-// Le statement est donc IMPUR -> racine -> garde, meme si personne ne
-// l'importe. C'est exactement le cas qu'un shaker naif casse.
+// A static field that CALLS: the class registers itself when defined. The
+// statement is therefore IMPURE -> a root -> kept, even though nobody imports
+// it. Exactly the case a naive shaker breaks.
 function register(name) {
   globalThis.__CLASS_REGISTRY__ = name;
   return name;

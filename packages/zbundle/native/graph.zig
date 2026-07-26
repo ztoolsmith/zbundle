@@ -1,16 +1,11 @@
-//! Le GRAPHE de modules : depuis une entry, suivre les dépendances jusqu'au
-//! point fixe et rendre la structure — modules, arêtes, externals, cycles.
+//! The module GRAPH: from an entry, follow dependencies to the fixed point and
+//! return the structure — modules, edges, externals, cycles.
 //!
-//! v0.1 s'arrête LÀ. Aucune émission de bundle : on VOIT le graphe, comme le
-//! premier tokenizer de zcompiler imprimait ses tokens. Ce qu'on voit
-//! maintenant est ce sur quoi tout le reste (ordre d'exécution, tree-shaking,
-//! code-splitting, chunks) se construira.
-//!
-//! **La règle d'or** : zbundle ne réimplémente RIEN de ce que zcompiler sait
-//! faire. Lire les dépendances d'un fichier, c'est du travail de compilateur —
-//! donc `zcompiler.parseWith` + `zcompiler.moduleRecords` (une capacité AJOUTÉE
-//! à zcompiler pour l'occasion). Ici il ne reste que ce qui est vraiment du
-//! bundler : la traversée, la déduplication, les cycles.
+//! **The golden rule**: zbundle never reimplements what zcompiler already does.
+//! Reading a file's dependencies is compiler work, so `zcompiler.parseWith` plus
+//! `zcompiler.moduleRecords` (a capability ADDED to zcompiler for this purpose).
+//! What remains here is what is genuinely bundler work: traversal, deduplication
+//! and cycles.
 
 const std = @import("std");
 const zc = @import("zcompiler");
@@ -19,42 +14,41 @@ const resolver = @import("resolver.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
-/// Un fichier source raisonnable. Au-delà, ce n'est pas du code : on refuse
-/// plutôt que d'avaler 2 Go dans l'arène.
+/// A reasonable source file. Beyond that it is not code: we refuse rather than
+/// swallow 2 GB into the arena.
 const MAX_FILE_BYTES = 32 * 1024 * 1024;
 
 pub const ModuleId = u32;
 
-/// Un module = un FICHIER, identifié par son chemin absolu canonique. Visité
-/// une seule fois, quel que soit le nombre d'importeurs (c'est le test du
-/// diamant).
+/// A module = a FILE, identified by its canonical absolute path. Visited exactly
+/// once, however many importers it has (that is the diamond test).
 pub const Module = struct {
     id: ModuleId,
     path: []const u8,
-    /// Déduit de l'extension (cf. `resolver.Format`) : pilote le mode de parse.
+    /// Derived from the extension (see `resolver.Format`): drives the parse mode.
     format: resolver.Format,
-    /// Nombre de diagnostics de parse. Non bloquant : zcompiler récupère des
-    /// erreurs et rend toujours un AST, donc un fichier cassé apporte quand
-    /// même les imports qu'on a pu lire (même philosophie que l'error recovery).
+    /// Number of parse diagnostics. Non-blocking: zcompiler recovers from errors
+    /// and always returns an AST, so a broken file still contributes the imports
+    /// we could read (same philosophy as its error recovery).
     parse_errors: u32,
 };
 
-/// Le type de dépendance, miroir exact de `zcompiler.ModuleRecordKind` : la
-/// frontière ne renomme rien.
+/// The dependency kind, an exact mirror of `zcompiler.ModuleRecordKind`: the
+/// boundary renames nothing.
 pub const EdgeKind = enum { import, re_export, export_all, export_all_as, dynamic_import };
 
-/// Une entrée de `with { type: 'json' }`, telle que zcompiler la décode.
-/// Inutilisée par la v0.1 (le resolver ne connaît que les extensions JS/TS) —
-/// c'est sur elle que la v0.5 routera les assets vers leur loader.
+/// An entry of `with { type: 'json' }`, as zcompiler decodes it. Unused so far
+/// (the resolver only knows JS/TS extensions) — this is what will route assets
+/// to their loader once package resolution lands.
 pub const Attribute = struct { key: []const u8, value: []const u8 };
 
-/// Une arête = une dépendance déclarée par `from`.
+/// An edge = a dependency declared by `from`.
 ///
-/// `to` est null quand la cible est EXTERNAL (specifier nu) ; `external` donne
-/// alors l'index dans `externals`. `is_dynamic` est dérivé de `kind` : redondant
-/// mais explicite, c'est l'info que lira le futur code-splitting.
-/// `name` : le nom d'export d'un `export * as ns from` (null partout ailleurs).
-/// `attributes` : la clause `with { … }`, vide si absente.
+/// `to` is null when the target is EXTERNAL (a bare specifier); `external` then
+/// gives the index into `externals`. `is_dynamic` is derived from `kind`:
+/// redundant but explicit, it is the piece future code splitting will read.
+/// `name`: the export name of an `export * as ns from` (null everywhere else).
+/// `attributes`: the `with { … }` clause, empty when absent.
 pub const Edge = struct {
     from: ModuleId,
     to: ?ModuleId,
@@ -66,7 +60,7 @@ pub const Edge = struct {
     attributes: []const Attribute = &.{},
 };
 
-/// Un specifier nu, dédupliqué, avec le nombre de fois où il est importé.
+/// A bare specifier, deduplicated, with how many times it is imported.
 pub const External = struct { specifier: []const u8, count: u32 };
 
 pub const Stats = struct {
@@ -75,69 +69,69 @@ pub const Stats = struct {
     externals: u32,
     cycles: u32,
     parse_errors: u32,
-    /// Temps de construction du graphe (lecture disque + parse + traversée).
+    /// Graph build time (disk reads + parsing + traversal).
     build_ms: f64,
 };
 
-/// Le module PARSÉ, gardé de côté pour l'étape d'après (le linker). Indexé par
-/// `ModuleId`, parallèle à `Graph.modules`.
+/// The PARSED module, kept aside for the next stage (the linker). Indexed by
+/// `ModuleId`, parallel to `Graph.modules`.
 ///
-/// Séparé de `Module` pour une raison bête et bonne : `Module` traverse la
-/// frontière N-API (zignapi le sérialise en objet JS), et un `*Node` n'a aucune
-/// représentation JS. Les pointeurs restent donc du côté Zig.
+/// Separate from `Module` for a dull but good reason: `Module` crosses the N-API
+/// boundary (zignapi serializes it into a JS object), and a `*Node` has no JS
+/// representation. Pointers therefore stay on the Zig side.
 ///
-/// **L'AST est déjà normalisé en JS pur** : les types TS effacés, le JSX abaissé
-/// en `jsx()/jsxs()`. Tout ce qui vient après (records, linking, émission) ne
-/// voit plus qu'un seul langage.
+/// **The AST is already normalized to plain JS**: TS types erased, JSX lowered
+/// to `jsx()/jsxs()`. Everything downstream (records, linking, emission) sees a
+/// single language.
 pub const Parsed = struct {
     source: []const u8,
     program: *zc.Node,
 };
 
-/// Le résultat complet. Tout est alloué dans l'arène passée à `build`.
+/// The complete result. Everything is allocated in the arena passed to `build`.
 pub const Graph = struct {
     entry: ModuleId,
     modules: []const Module,
     edges: []const Edge,
     externals: []const External,
-    /// Chaque cycle = la liste (triée) des modules qui s'atteignent
-    /// mutuellement. Cf. `findCycles` pour la définition exacte.
+    /// Each cycle = the (sorted) list of modules that reach one another. See
+    /// `findCycles` for the exact definition.
     cycles: []const []const ModuleId,
     stats: Stats,
 };
 
-/// L'erreur d'un `build` : le message est déjà formaté pour l'utilisateur
-/// (specifier + demandeur + chemins essayés).
+/// A `build` failure: the message is already formatted for the user (specifier
+/// plus importer plus attempted paths).
 pub const BuildError = struct { message: []const u8 = "" };
 
 pub const Error = error{ BuildFailed, OutOfMemory };
 
-/// Ce que rend `build` : le graphe (sérialisable) + les ASTs (côté Zig).
+/// What `build` returns: the graph (serializable) plus the ASTs (Zig side).
 pub const Built = struct { graph: Graph, parsed: []const Parsed };
 
-/// Construit le graphe depuis `entry` (un chemin, relatif au cwd ou absolu).
+/// Builds the graph from `entry` (a path, relative to the cwd or absolute).
 ///
-/// Traversée en **largeur** (file FIFO) : chaque module découvert reçoit un id
-/// dans l'ordre de découverte, est lu+parsé UNE fois, et ses records deviennent
-/// des arêtes. Les ids étant attribués à la découverte et la file étant FIFO,
-/// les arêtes sortent groupées par `from` croissant — sortie déterministe.
+/// **Breadth-first** traversal (FIFO queue): every discovered module gets an id
+/// in discovery order, is read and parsed ONCE, and its records become edges.
+/// Since ids are assigned on discovery and the queue is FIFO, edges come out
+/// grouped by ascending `from` — deterministic output.
 ///
-/// Un specifier relatif qui ne résout pas fait ÉCHOUER le build (`err.message`
-/// contient les chemins essayés). Un specifier nu ne fait jamais échouer :
-/// il devient un external.
+/// A relative specifier that does not resolve FAILS the build (`err.message`
+/// holds the attempted paths). A bare specifier never fails: it becomes an
+/// external.
 pub fn build(a: Allocator, io: Io, entry: []const u8, err: *BuildError) Error!Built {
     const t0 = Io.Clock.awake.now(io).nanoseconds;
 
     var b = Builder{ .a = a, .io = io, .err = err };
-    // L'entry est rendue ABSOLUE avant tout : `std.fs.path.resolve` est purement
-    // lexical en Zig 0.16 (il ne connaît pas le cwd), donc sans ça une entry
-    // relative resterait relative dans les messages d'erreur.
+    // The entry is made ABSOLUTE first: `std.fs.path.resolve` is purely lexical
+    // in Zig 0.16 (it does not know the cwd), so without this a relative entry
+    // would stay relative in error messages.
     const abs_entry = try absolute(a, io, entry);
     const entry_dir = std.fs.path.dirname(abs_entry) orelse ".";
     const entry_name = try std.mem.concat(a, u8, &.{ "./", std.fs.path.basename(abs_entry) });
     const entry_id = try b.resolveAndIntern(entry_dir, entry_name, "");
 
-    // File FIFO : `cursor` avance, `modules` s'allonge derrière lui.
+    // FIFO queue: `cursor` advances, `modules` grows behind it.
     var cursor: usize = 0;
     while (cursor < b.modules.items.len) : (cursor += 1) {
         try b.scan(@intCast(cursor));
@@ -166,8 +160,8 @@ pub fn build(a: Allocator, io: Io, entry: []const u8, err: *BuildError) Error!Bu
     };
 }
 
-/// `path` tel quel s'il est absolu, sinon préfixé du cwd du process. Ne touche
-/// pas au disque pour le fichier lui-même (le resolver s'en charge juste après).
+/// `path` as is when absolute, otherwise prefixed with the process cwd. Does not
+/// touch the disk for the file itself (the resolver does that right after).
 fn absolute(a: Allocator, io: Io, path: []const u8) Allocator.Error![]const u8 {
     if (std.fs.path.isAbsolute(path)) return path;
     const cwd = std.process.currentPathAlloc(io, a) catch return path;
@@ -179,18 +173,18 @@ const Builder = struct {
     io: Io,
     err: *BuildError,
     modules: std.ArrayList(Module) = .empty,
-    /// Parallèle à `modules` : l'AST normalisé de chacun, gardé pour le linker.
+    /// Parallel to `modules`: each one's normalized AST, kept for the linker.
     parsed: std.ArrayList(Parsed) = .empty,
     edges: std.ArrayList(Edge) = .empty,
     externals: std.ArrayList(External) = .empty,
-    /// chemin canonique -> id. LA table qui garantit « un fichier = un module ».
+    /// canonical path -> id. THE table that guarantees "one file = one module".
     by_path: std.StringHashMapUnmanaged(ModuleId) = .empty,
-    /// specifier nu -> index dans `externals`.
+    /// bare specifier -> index into `externals`.
     by_specifier: std.StringHashMapUnmanaged(u32) = .empty,
     parse_errors: u32 = 0,
 
-    /// Résout `specifier` depuis `from_dir` et renvoie l'id du module (créé s'il
-    /// est nouveau). `error.BuildFailed` si un relatif ne résout pas.
+    /// Resolves `specifier` from `from_dir` and returns the module id (creating
+    /// it if new). `error.BuildFailed` if a relative specifier does not resolve.
     fn resolveAndIntern(self: *Builder, from_dir: []const u8, specifier: []const u8, importer: []const u8) Error!ModuleId {
         var diag: resolver.Diagnostic = .{};
         const r = resolver.resolve(self.a, self.io, from_dir, specifier, &diag) catch |e| switch (e) {
@@ -200,12 +194,12 @@ const Builder = struct {
                 return error.BuildFailed;
             },
         };
-        std.debug.assert(r.kind == .file); // l'appelant a filtré les externals
+        std.debug.assert(r.kind == .file); // the caller filtered out externals
         return self.intern(r.path);
     }
 
-    /// L'id de `path` (canonique), en le créant au besoin. C'est ici, et nulle
-    /// part ailleurs, que la déduplication se joue.
+    /// The id of `path` (canonical), creating it if needed. This is where — and
+    /// nowhere else — deduplication happens.
     fn intern(self: *Builder, path: []const u8) Error!ModuleId {
         const gop = try self.by_path.getOrPut(self.a, path);
         if (gop.found_existing) return gop.value_ptr.*;
@@ -217,7 +211,7 @@ const Builder = struct {
             .format = resolver.formatOf(path),
             .parse_errors = 0,
         });
-        try self.parsed.append(self.a, .{ .source = "", .program = undefined }); // rempli par `scan`
+        try self.parsed.append(self.a, .{ .source = "", .program = undefined }); // filled in by `scan`
         return id;
     }
 
@@ -231,10 +225,9 @@ const Builder = struct {
         return gop.value_ptr.*;
     }
 
-    /// Lit + parse le module `id`, le **normalise en JS pur**, et transforme ses
-    /// module records en arêtes.
-    /// **Toute la compréhension du JS est chez zcompiler** : ici on ne fait que
-    /// router des chemins.
+    /// Reads and parses module `id`, **normalizes it to plain JS**, and turns its
+    /// module records into edges.
+    /// **All JS understanding lives in zcompiler**: here we only route paths.
     fn scan(self: *Builder, id: ModuleId) Error!void {
         const mod = self.modules.items[id];
         const src = resolver.readFile(self.a, self.io, mod.path, MAX_FILE_BYTES) catch |e| {
@@ -247,22 +240,23 @@ const Builder = struct {
         self.modules.items[id].parse_errors = @intCast(parsed.errors.len);
         self.parse_errors += @intCast(parsed.errors.len);
 
-        // NORMALISATION EN JS PUR, tout de suite — avant les records, avant tout.
-        // Les types TS s'effacent, le JSX s'abaisse en `jsx()/jsxs()`. Deux raisons :
-        //   1. le linker et l'émetteur ne voient qu'UN seul langage ;
-        //   2. surtout, `jsxTransform` **AJOUTE un import** (`react/jsx-runtime`).
-        //      Le faire APRÈS l'extraction des records rendrait cette dépendance
-        //      invisible au graphe — le bundle référencerait `jsx` sans l'importer.
-        // L'ordre (strip PUIS jsx) est celui du harnais de zcompiler.
+        // NORMALIZE TO PLAIN JS right away — before records, before anything.
+        // TS types are erased, JSX is lowered to `jsx()/jsxs()`. Two reasons:
+        //   1. the linker and the emitter only ever see ONE language;
+        //   2. more importantly, `jsxTransform` **ADDS an import**
+        //      (`react/jsx-runtime`). Doing it AFTER record extraction would make
+        //      that dependency invisible to the graph — the bundle would
+        //      reference `jsx` without importing it.
+        // The order (strip THEN jsx) is the one zcompiler's own harness uses.
         if (f.ts) zc.transformer.stripTypes(parsed.program, src, self.a);
         if (f.jsx) _ = zc.jsx_transform.transform(parsed.program, src, self.a, .{});
         self.parsed.items[id] = .{ .source = src, .program = parsed.program };
 
         const dir = std.fs.path.dirname(mod.path) orelse ".";
         for (zc.moduleRecords(self.a, parsed.program, src)) |rec| {
-            // `import type { T } from './t'` est effacé à l'émission : ce n'est
-            // pas une dépendance runtime, donc pas une arête. (Après `stripTypes`
-            // il n'en reste normalement plus ; la garde coûte zéro.)
+            // `import type { T } from './t'` is erased on emission: it is not a
+            // runtime dependency, so not an edge. (After `stripTypes` there
+            // should be none left; the guard costs nothing.)
             if (rec.type_only) continue;
             try self.addEdge(id, dir, mod.path, rec);
         }
@@ -289,19 +283,19 @@ const Builder = struct {
     }
 };
 
-/// La frontière zcompiler → zbundle : un `switch` exhaustif, pour qu'un jour où
-/// zcompiler ajoutera un `kind` (les import attributes, `require`…), le
-/// compilateur nous force à décider ici.
+/// The zcompiler -> zbundle boundary: an exhaustive `switch`, so that the day
+/// zcompiler adds a `kind` (import attributes, `require`...), the compiler forces
+/// us to decide here.
 fn kindOf(k: zc.ModuleRecordKind) EdgeKind {
     return switch (k) {
         .import => .import,
         .re_export => .re_export,
         .export_all => .export_all,
-        // Ajouté par zcompiler 0.2.0. Le `switch` exhaustif a REFUSÉ de compiler
-        // tant que ce cas n'était pas traité — c'est exactement le rôle qu'on lui
-        // avait donné : rendre impossible d'ignorer en silence une capacité neuve
-        // du compilateur. Une arête à part entière (le module cible est bien une
-        // dépendance) ; ce qui change, c'est ce que le futur émetteur en fera.
+        // Added by zcompiler 0.2.0. The exhaustive `switch` REFUSED to compile
+        // until this case was handled — exactly the role it was given: making it
+        // impossible to silently ignore a new compiler capability. A full-fledged
+        // edge (the target module really is a dependency); what differs is what
+        // the emitter will make of it.
         .export_all_as => .export_all_as,
         .dynamic_import => .dynamic_import,
     };
@@ -309,19 +303,18 @@ fn kindOf(k: zc.ModuleRecordKind) EdgeKind {
 
 // ---- cycles ----
 
-/// Les cycles du graphe, via **Tarjan** (composantes fortement connexes),
-/// itératif — un vrai projet a des chaînes de plusieurs centaines de modules,
-/// une DFS récursive finirait par déborder la pile.
+/// The graph's cycles, via **Tarjan** (strongly connected components),
+/// iterative — a real project has chains of hundreds of modules, and a recursive
+/// DFS would eventually blow the stack.
 ///
-/// Définition retenue : un cycle = une SCC de taille > 1 (ses modules
-/// s'atteignent tous mutuellement), ou un module qui s'importe lui-même. Toute
-/// boucle du graphe est contenue dans exactement une SCC — donc la liste est
-/// complète, sans doublon ni explosion combinatoire (énumérer tous les chemins
-/// cycliques serait exponentiel).
+/// Definition used: a cycle = an SCC of size > 1 (its modules all reach one
+/// another), or a module that imports itself. Every loop in the graph is
+/// contained in exactly one SCC — so the list is complete, without duplicates or
+/// combinatorial blow-up (enumerating every cyclic path would be exponential).
 ///
-/// **Un cycle n'est PAS une erreur** : les cycles ESM sont légaux et le vrai
-/// code en a. Le bundler devra les gérer (ordre d'exécution, bindings vivants) ;
-/// le graphe doit déjà les voir.
+/// **A cycle is NOT an error**: ESM cycles are legal and real code has them. The
+/// bundler will have to handle them (execution order, live bindings); the graph
+/// must already see them.
 fn findCycles(a: Allocator, n_modules: usize, edges: []const Edge) Allocator.Error![]const []const ModuleId {
     if (n_modules == 0) return &.{};
     const adj = try adjacency(a, n_modules, edges);
@@ -338,7 +331,7 @@ fn findCycles(a: Allocator, n_modules: usize, edges: []const Edge) Allocator.Err
     var scc_stack: std.ArrayList(ModuleId) = .empty;
     var out: std.ArrayList([]const ModuleId) = .empty;
 
-    // Pile de DFS explicite : (module, position dans sa liste d'adjacence).
+    // Explicit DFS stack: (module, position in its adjacency list).
     const Frame = struct { v: ModuleId, i: usize };
     var stack: std.ArrayList(Frame) = .empty;
 
@@ -369,8 +362,8 @@ fn findCycles(a: Allocator, n_modules: usize, edges: []const Edge) Allocator.Err
                 }
                 continue;
             }
-            // v est fini : remonte son lowlink au parent, et ferme la SCC si
-            // v en est la racine.
+            // v is finished: propagate its lowlink to the parent, and close the
+            // SCC if v is its root.
             _ = stack.pop();
             if (stack.items.len > 0) {
                 const parent = stack.items[stack.items.len - 1].v;
@@ -392,7 +385,7 @@ fn findCycles(a: Allocator, n_modules: usize, edges: []const Edge) Allocator.Err
         }
     }
 
-    // Ordre stable pour les tests et les diffs : par plus petit membre.
+    // Stable order for tests and diffs: by smallest member.
     std.mem.sort([]const ModuleId, out.items, {}, cycleLess);
     return out.items;
 }
@@ -405,8 +398,8 @@ fn hasSelfLoop(neighbors: []const ModuleId, v: ModuleId) bool {
     return std.mem.indexOfScalar(ModuleId, neighbors, v) != null;
 }
 
-/// Listes d'adjacence (les arêtes externals sont ignorées : un external est une
-/// feuille, il ne peut pas fermer un cycle).
+/// Adjacency lists (external edges are ignored: an external is a leaf, it cannot
+/// close a cycle).
 fn adjacency(a: Allocator, n_modules: usize, edges: []const Edge) Allocator.Error![]const []const ModuleId {
     const counts = try a.alloc(u32, n_modules);
     @memset(counts, 0);
@@ -431,14 +424,14 @@ fn adjacency(a: Allocator, n_modules: usize, edges: []const Edge) Allocator.Erro
 
 // ---- debug printer ----
 
-/// L'arbre indenté, lisible : l'entry en racine, un niveau par profondeur, les
-/// externals marqués, les cycles signalés. Le pendant du `printTree` de
-/// zcompiler — un graphe qu'on ne peut pas LIRE ne se débogue pas.
+/// The readable indented tree: the entry as root, one level per depth, externals
+/// marked, cycles reported. The counterpart of zcompiler's `printTree` — a graph
+/// you cannot READ is a graph you cannot debug.
 ///
-/// Les chemins sont affichés relativement au dossier de l'entry. Un module déjà
-/// visité n'est pas redéveloppé (sinon un diamant doublerait, un cycle
-/// boucherait) : il est marqué, avec `(cycle)` si le module est un ancêtre dans
-/// la branche courante.
+/// Paths are shown relative to the entry's directory. An already-visited module
+/// is not expanded again (otherwise a diamond would duplicate and a cycle would
+/// loop): it is marked, with `(cycle)` when the module is an ancestor on the
+/// current branch.
 pub fn printTree(a: Allocator, g: Graph, out: *std.ArrayList(u8)) Allocator.Error!void {
     const root_dir = std.fs.path.dirname(g.modules[g.entry].path) orelse ".";
     const adj = try edgeIndex(a, g);
@@ -496,9 +489,9 @@ fn walk(
         const e = g.edges[ei];
         if (e.to) |to| {
             if (e.is_dynamic) {
-                // Un `import()` est une FRONTIÈRE (le futur point de découpe en
-                // chunks) : il se voit dans l'arbre, même si la v0.1 le suit
-                // comme une arête normale.
+                // An `import()` is a BOUNDARY (the future chunk split point): it
+                // shows up in the tree, even though it is currently followed like
+                // any other edge.
                 try indent(a, out, depth + 1);
                 try out.appendSlice(a, "(dynamic)\n");
             }
@@ -516,7 +509,7 @@ fn indent(a: Allocator, out: *std.ArrayList(u8), depth: usize) Allocator.Error!v
     for (0..depth) |_| try out.appendSlice(a, "  ");
 }
 
-/// Chemin relatif à `root_dir` quand c'est possible (lisible), absolu sinon.
+/// Path relative to `root_dir` when possible (readable), absolute otherwise.
 fn display(a: Allocator, root_dir: []const u8, path: []const u8) Allocator.Error![]const u8 {
     if (path.len > root_dir.len + 1 and std.mem.startsWith(u8, path, root_dir) and
         path[root_dir.len] == std.fs.path.sep)
@@ -526,7 +519,7 @@ fn display(a: Allocator, root_dir: []const u8, path: []const u8) Allocator.Error
     return path;
 }
 
-/// Pour chaque module, les INDEX de ses arêtes sortantes (dans l'ordre source).
+/// For each module, the INDICES of its outgoing edges (in source order).
 fn edgeIndex(a: Allocator, g: Graph) Allocator.Error![]const []const u32 {
     const counts = try a.alloc(u32, g.modules.len);
     @memset(counts, 0);
@@ -556,10 +549,10 @@ const Sandbox = struct {
         var arena = std.heap.ArenaAllocator.init(gpa);
         var buf: [std.fs.max_path_bytes]u8 = undefined;
         const n = try tmp.dir.realPath(io, &buf);
-        // En DEUX temps : dans un `return .{ .arena = arena, .root = try
-        // arena.allocator()… }`, l'arène est copiée dans le slot de retour AVANT
-        // que `.root` n'alloue — l'allocation partirait dans la copie locale,
-        // jamais libérée (fuite réelle, attrapée par le test runner).
+        // In TWO steps: in a `return .{ .arena = arena, .root = try
+        // arena.allocator()… }`, the arena is copied into the return slot BEFORE
+        // `.root` allocates — the allocation would land in the local copy, never
+        // freed (a real leak, caught by the test runner).
         const root = try arena.allocator().dupe(u8, buf[0..n]);
         return .{ .tmp = tmp, .arena = arena, .root = root };
     }
@@ -583,7 +576,7 @@ const Sandbox = struct {
         };
         return built.graph;
     }
-    /// Le module dont le chemin se termine par `suffix` (assertions lisibles).
+    /// The module whose path ends with `suffix` (readable assertions).
     fn find(self: *Sandbox, g: Graph, suffix: []const u8) !ModuleId {
         _ = self;
         for (g.modules) |m| {
@@ -593,7 +586,7 @@ const Sandbox = struct {
     }
 };
 
-test "chaine simple a -> b -> c" {
+test "simple chain a -> b -> c" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "import './b.js';");
@@ -606,7 +599,7 @@ test "chaine simple a -> b -> c" {
     try std.testing.expectEqual(@as(ModuleId, 0), g.entry);
 }
 
-test "diamant : le module partage est visite UNE fois (4 modules, pas 5)" {
+test "diamond: the shared module is visited ONCE (4 modules, not 5)" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "import './b.js'; import './c.js';");
@@ -615,9 +608,9 @@ test "diamant : le module partage est visite UNE fois (4 modules, pas 5)" {
     try s.write("d.js", "export const x = 1;");
     const g = try s.graph("a.js");
     try std.testing.expectEqual(@as(u32, 4), g.stats.modules);
-    try std.testing.expectEqual(@as(u32, 4), g.stats.edges); // les 2 aretes vers d existent
+    try std.testing.expectEqual(@as(u32, 4), g.stats.edges); // both edges to d still exist
     try std.testing.expectEqual(@as(u32, 0), g.stats.cycles);
-    // Les deux aretes pointent vers le MEME id.
+    // Both edges point at the SAME id.
     const d = try s.find(g, "d.js");
     var to_d: u32 = 0;
     for (g.edges) |e| {
@@ -628,7 +621,7 @@ test "diamant : le module partage est visite UNE fois (4 modules, pas 5)" {
     try std.testing.expectEqual(@as(u32, 2), to_d);
 }
 
-test "cycle a -> b -> a : detecte, liste, pas une erreur, pas de boucle infinie" {
+test "cycle a -> b -> a: detected, listed, not an error, no infinite loop" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "import './b.js';");
@@ -639,7 +632,7 @@ test "cycle a -> b -> a : detecte, liste, pas une erreur, pas de boucle infinie"
     try std.testing.expectEqual(@as(usize, 2), g.cycles[0].len);
 }
 
-test "auto-import (a -> a) : un cycle d'un seul module" {
+test "self-import (a -> a): a one-module cycle" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "import './a.js'; export const x = 1;");
@@ -649,7 +642,7 @@ test "auto-import (a -> a) : un cycle d'un seul module" {
     try std.testing.expectEqual(@as(usize, 1), g.cycles[0].len);
 }
 
-test "un re-export EST une dependance" {
+test "a re-export IS a dependency" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "export { x } from './b.js'; export * from './c.js';");
@@ -661,7 +654,7 @@ test "un re-export EST une dependance" {
     try std.testing.expectEqual(EdgeKind.export_all, g.edges[1].kind);
 }
 
-test "specifier nu -> external, et le graphe continue" {
+test "bare specifier -> external, and the graph carries on" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "import 'react'; import './b.js'; import 'react';");
@@ -673,7 +666,7 @@ test "specifier nu -> external, et le graphe continue" {
     try std.testing.expectEqual(@as(u32, 2), g.externals[0].count);
 }
 
-test "import() dynamique : arete marquee is_dynamic" {
+test "dynamic import(): edge marked is_dynamic" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "const f = () => import('./b.js');");
@@ -684,7 +677,7 @@ test "import() dynamique : arete marquee is_dynamic" {
     try std.testing.expectEqual(EdgeKind.dynamic_import, g.edges[0].kind);
 }
 
-test "mixte .ts / .js / .jsx / .tsx : chaque fichier parse dans son mode" {
+test "mixed .ts / .js / .jsx / .tsx: each file parsed in its own mode" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.tsx", "import { B } from './b'; const x: number = 1; export const A = () => <B x={x} />;");
@@ -697,7 +690,7 @@ test "mixte .ts / .js / .jsx / .tsx : chaque fichier parse dans son mode" {
     try std.testing.expectEqual(resolver.Format.tsx, g.modules[g.entry].format);
 }
 
-test "import type : efface a l'emission, donc PAS une arete" {
+test "import type: erased on emission, so NOT an edge" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.ts", "import type { T } from './types'; import { v } from './v';");
@@ -708,7 +701,7 @@ test "import type : efface a l'emission, donc PAS une arete" {
     try std.testing.expectEqual(@as(u32, 1), g.stats.edges);
 }
 
-test "relatif introuvable : erreur avec les chemins essayes" {
+test "relative not found: error with the attempted paths" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "import './missing';");
@@ -716,11 +709,11 @@ test "relatif introuvable : erreur avec les chemins essayes" {
     const full = try std.fs.path.join(s.a(), &.{ s.root, "a.js" });
     try std.testing.expectError(error.BuildFailed, build(s.a(), Sandbox.io, full, &err));
     try std.testing.expect(std.mem.indexOf(u8, err.message, "cannot resolve './missing'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, err.message, "a.js") != null); // le demandeur
-    try std.testing.expect(std.mem.indexOf(u8, err.message, "missing.ts") != null); // les essais
+    try std.testing.expect(std.mem.indexOf(u8, err.message, "a.js") != null); // the importer
+    try std.testing.expect(std.mem.indexOf(u8, err.message, "missing.ts") != null); // the attempts
 }
 
-test "code casse : le graphe se construit quand meme (error recovery)" {
+test "broken code: the graph is still built (error recovery)" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "import './b.js'; let x = ; import './c.js';");
@@ -731,7 +724,7 @@ test "code casse : le graphe se construit quand meme (error recovery)" {
     try std.testing.expect(g.stats.parse_errors > 0);
 }
 
-test "printTree : arbre lisible, externals et cycles marques" {
+test "printTree: readable tree, externals and cycles marked" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     try s.write("a.js", "import './b.js'; import 'react';");

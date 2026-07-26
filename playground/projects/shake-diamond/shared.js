@@ -1,2 +1,2 @@
-// Partage entre la branche vivante et la morte : il SURVIT (la vivante le tire).
+// Shared between the live and dead branches: it SURVIVES (the live one pulls it).
 export const sharedUtil = (n) => n + 1;

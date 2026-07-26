@@ -1,5 +1,5 @@
 // expect-present: config
-// Le getter DOIT s'executer : son effet de bord est observable.
+// The getter MUST run: its side effect is observable.
 import { config } from './config.js';
 
 console.log('config:', config);
