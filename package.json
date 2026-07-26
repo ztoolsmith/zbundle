@@ -1,0 +1,16 @@
+{
+  "name": "zbundle-monorepo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "corpus": "node playground/corpus.js --graph corpus/fixtures",
+    "clean": "pnpm -r exec rm -rf dist zig-out .zig-cache"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  },
+  "packageManager": "pnpm@11.8.0"
+}

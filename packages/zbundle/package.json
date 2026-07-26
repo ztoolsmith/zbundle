@@ -1,0 +1,37 @@
+{
+  "name": "zbundle",
+  "version": "0.3.0",
+  "description": "Bundler JavaScript/TypeScript écrit en Zig, sur zcompiler — scope hoisting, un seul fichier",
+  "keywords": ["bundler", "zig", "javascript", "typescript", "esm", "module-graph"],
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "bindings.js",
+    "native",
+    "build.zig",
+    "build.zig.zon"
+  ],
+  "scripts": {
+    "build": "zignapi build",
+    "test": "node --test",
+    "prepublishOnly": "zignapi build"
+  },
+  "zignapi": {
+    "binaryName": "zbundle",
+    "packageName": "@zbundle/binding",
+    "targets": [
+      "darwin-arm64",
+      "darwin-x64",
+      "linux-x64-gnu",
+      "linux-x64-musl",
+      "linux-arm64-gnu",
+      "win32-x64-msvc"
+    ]
+  },
+  "devDependencies": {
+    "zignapi": "file:../../../zignapi/packages/zignapi"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,12 @@
+{
+  "why": "`export *` : une dependance de plein droit, transitive (a re-exporte deep). Kind distinct de re_export — le futur tree-shaking les traitera differemment.",
+  "entry": "entry.js",
+  "modules": ["entry.js", "a.js", "b.js", "deep.js"],
+  "edges": [
+    { "from": "entry.js", "to": "a.js", "specifier": "./a.js", "kind": "export_all" },
+    { "from": "entry.js", "to": "b.js", "specifier": "./b.js", "kind": "export_all" },
+    { "from": "a.js", "to": "deep.js", "specifier": "./deep.js", "kind": "export_all" }
+  ],
+  "externals": [],
+  "cycles": []
+}

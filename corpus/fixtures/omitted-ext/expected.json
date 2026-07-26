@@ -1,0 +1,21 @@
+{
+  "why": "L'ordre EXACT de la table d'extensions, cas par cas : .ts > .tsx > .js > .jsx > .mjs. Chaque `pick-*` a deux fichiers candidats ; seul le bon doit entrer dans le graphe (5 modules + l'entry, pas 10).",
+  "entry": "entry.js",
+  "modules": [
+    "entry.js",
+    "pick-ts.ts",
+    "pick-tsx.tsx",
+    "pick-js.js",
+    "pick-jsx.jsx",
+    "pick-mjs.mjs"
+  ],
+  "edges": [
+    { "from": "entry.js", "to": "pick-ts.ts", "specifier": "./pick-ts", "kind": "import" },
+    { "from": "entry.js", "to": "pick-tsx.tsx", "specifier": "./pick-tsx", "kind": "import" },
+    { "from": "entry.js", "to": "pick-js.js", "specifier": "./pick-js", "kind": "import" },
+    { "from": "entry.js", "to": "pick-jsx.jsx", "specifier": "./pick-jsx", "kind": "import" },
+    { "from": "entry.js", "to": "pick-mjs.mjs", "specifier": "./pick-mjs", "kind": "import" }
+  ],
+  "externals": [],
+  "cycles": []
+}

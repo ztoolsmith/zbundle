@@ -1,0 +1,23 @@
+{
+  "why": "Import attributes (ES2025) : `with { type: 'json' }` sur toutes les formes (default, side-effect, namespace, re-export, export * as) + `assert` deprecie. 2e trou revele par zbundle : AVANT la 0.2.0 de zcompiler, ce fichier partait entierement en erreur de syntaxe et AUCUNE dependance n'en sortait — meme le './code.js' local disparaissait. Ce que la fixture verifie : zero erreur de parse, les 5 specifiers nus deviennent des externals, et le code local est suivi transitivement. (Les assets sont des specifiers de PAQUET : un './x.json' relatif ne resout pas en v0.1, la table s'arrete aux extensions JS/TS — les loaders, c'est la v0.5.)",
+  "entry": "entry.js",
+  "modules": ["entry.js", "code.js", "helper.js"],
+  "edges": [
+    { "from": "entry.js", "external": "@app/config/data.json", "specifier": "@app/config/data.json", "kind": "import" },
+    { "from": "entry.js", "external": "normalize.css/normalize.css", "specifier": "normalize.css/normalize.css", "kind": "import" },
+    { "from": "entry.js", "external": "vendor-data", "specifier": "vendor-data", "kind": "import" },
+    { "from": "entry.js", "external": "vendor-entries", "specifier": "vendor-entries", "kind": "re_export" },
+    { "from": "entry.js", "external": "vendor-legacy", "specifier": "vendor-legacy", "kind": "export_all_as" },
+    { "from": "entry.js", "to": "code.js", "specifier": "./code.js", "kind": "import" },
+    { "from": "code.js", "to": "helper.js", "specifier": "./helper.js", "kind": "import" }
+  ],
+  "externals": [
+    { "specifier": "@app/config/data.json", "count": 1 },
+    { "specifier": "normalize.css/normalize.css", "count": 1 },
+    { "specifier": "vendor-data", "count": 1 },
+    { "specifier": "vendor-entries", "count": 1 },
+    { "specifier": "vendor-legacy", "count": 1 }
+  ],
+  "cycles": [],
+  "parse_errors": 0
+}

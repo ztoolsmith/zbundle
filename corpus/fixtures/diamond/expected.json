@@ -1,0 +1,13 @@
+{
+  "why": "Le diamant : d est importe par b ET par c. QUATRE modules, pas cinq — la deduplication par chemin canonique. Les DEUX aretes vers d existent quand meme.",
+  "entry": "entry.js",
+  "modules": ["entry.js", "b.js", "c.js", "d.js"],
+  "edges": [
+    { "from": "entry.js", "to": "b.js", "specifier": "./b.js", "kind": "import" },
+    { "from": "entry.js", "to": "c.js", "specifier": "./c.js", "kind": "import" },
+    { "from": "b.js", "to": "d.js", "specifier": "./d.js", "kind": "import" },
+    { "from": "c.js", "to": "d.js", "specifier": "./d.js", "kind": "import" }
+  ],
+  "externals": [],
+  "cycles": []
+}

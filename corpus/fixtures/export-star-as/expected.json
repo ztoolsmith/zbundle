@@ -1,0 +1,14 @@
+{
+  "why": "`export * as ns from` (ES2020) — le pattern barrel. C'est zbundle qui a revele que zcompiler ne le parsait pas : le kind export_all_as est distinct d'export_all (ca ne re-exporte pas les noms de la cible, ca cree UN export nomme qui vaut le namespace), et le graphe doit suivre l'arete transitivement (strings.js -> pad.js).",
+  "entry": "entry.js",
+  "modules": ["entry.js", "math.js", "strings.js", "pad.js", "shared.js", "plain.js"],
+  "edges": [
+    { "from": "entry.js", "to": "math.js", "specifier": "./math.js", "kind": "export_all_as" },
+    { "from": "entry.js", "to": "strings.js", "specifier": "./strings.js", "kind": "export_all_as" },
+    { "from": "entry.js", "to": "shared.js", "specifier": "./shared.js", "kind": "export_all" },
+    { "from": "entry.js", "to": "plain.js", "specifier": "./plain.js", "kind": "re_export" },
+    { "from": "strings.js", "to": "pad.js", "specifier": "./pad.js", "kind": "import" }
+  ],
+  "externals": [],
+  "cycles": []
+}

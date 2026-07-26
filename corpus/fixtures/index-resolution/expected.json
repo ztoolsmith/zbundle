@@ -1,0 +1,12 @@
+{
+  "why": "Resolution de dossier : `./utils` -> utils/index.ts. Le piege est widgets/ qui a index.js ET index.ts : la table impose index.ts (la source, pas la sortie compilee a cote).",
+  "entry": "entry.js",
+  "modules": ["entry.js", "utils/index.ts", "utils/inner.ts", "widgets/index.ts"],
+  "edges": [
+    { "from": "entry.js", "to": "utils/index.ts", "specifier": "./utils", "kind": "import" },
+    { "from": "entry.js", "to": "widgets/index.ts", "specifier": "./widgets", "kind": "import" },
+    { "from": "utils/index.ts", "to": "utils/inner.ts", "specifier": "./inner.ts", "kind": "import" }
+  ],
+  "externals": [],
+  "cycles": []
+}

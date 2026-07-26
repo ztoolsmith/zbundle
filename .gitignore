@@ -1,0 +1,25 @@
+node_modules/
+dist/
+zig-out/
+.zig-cache/
+zig-cache/
+*.node
+*.wasm
+
+CLAUDE.md
+
+# Générés par `zignapi build` (loader natif, packages de plateforme)
+/packages/*/index.js
+/packages/*/index.d.ts
+/packages/*/bindings.js
+/packages/*/npm/
+
+# Corpus tiers (installé via corpus/real/package.json). Le RESTE de corpus/ est
+# versionné et sert à la CI : fixtures/ (les mini-projets fabriqués + leurs
+# expected.json).
+/corpus/real/node_modules/
+
+# Artefacts du playground (bundles générés + miroirs de référence)
+/playground/projects/*/.bundle.mjs
+/playground/projects/*/.reference/
+/playground/projects/*/.inspect.mjs

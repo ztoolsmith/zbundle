@@ -1,0 +1,18 @@
+.{
+    .name = .zbundle,
+    .version = "0.1.0",
+    .fingerprint = 0xc1cdc345f538e502, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // Les DEUX repos de l'org, en siblings (même convention que zcompiler ->
+        // zignapi). `zcompiler` fournit le module Zig `zcompiler` (parser +
+        // semantic + AST) ; `zignapi` fournit le module `zignapi` (le pont N-API).
+        .zignapi = .{ .path = "../../../zignapi/packages/zignapi" },
+        .zcompiler = .{ .path = "../../../zcompiler/packages/zcompiler" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "native",
+    },
+}

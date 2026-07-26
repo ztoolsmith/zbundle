@@ -1,0 +1,10 @@
+{
+  "name": "zbundle-corpus-real",
+  "private": true,
+  "description": "Les projets-temoins : de VRAIS projets ESM, installes ici (node_modules gitignore, comme le corpus de zcompiler). Le harnais y verifie no-crash + stats plausibles, pas un expected.json.",
+  "dependencies": {
+    "lodash-es": "^4.18.1",
+    "mitt": "^3.0.1",
+    "nanoid": "^6.0.0"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "why": "`import()` : suivi comme une arete normale en v0.1, mais MARQUE is_dynamic — c'est la frontiere ou le futur code-splitting decoupera les chunks. Un `import(variable)` n'est pas analysable statiquement : aucune arete, et surtout pas une erreur.",
+  "entry": "entry.js",
+  "modules": ["entry.js", "eager.js", "lazy.js", "heavy.ts", "shared.js"],
+  "edges": [
+    { "from": "entry.js", "to": "eager.js", "specifier": "./eager.js", "kind": "import" },
+    { "from": "entry.js", "to": "lazy.js", "specifier": "./lazy.js", "kind": "dynamic_import" },
+    { "from": "entry.js", "to": "heavy.ts", "specifier": "./heavy.ts", "kind": "dynamic_import" },
+    { "from": "entry.js", "external": "some-vendor", "specifier": "some-vendor", "kind": "dynamic_import" },
+    { "from": "lazy.js", "to": "shared.js", "specifier": "./shared.js", "kind": "import" },
+    { "from": "heavy.ts", "to": "shared.js", "specifier": "./shared.js", "kind": "import" }
+  ],
+  "externals": [{ "specifier": "some-vendor", "count": 1 }],
+  "cycles": []
+}

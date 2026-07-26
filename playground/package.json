@@ -1,0 +1,16 @@
+{
+  "name": "playground",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Bac à sable pour regarder un graphe de modules à la main",
+  "scripts": {
+    "start": "node index.js",
+    "judge": "node run.mjs",
+    "inspect": "node inspect.mjs"
+  },
+  "dependencies": {
+    "zbundle": "workspace:*",
+    "zcompiler": "link:../../zcompiler/packages/zcompiler"
+  },
+  "type": "module"
+}
