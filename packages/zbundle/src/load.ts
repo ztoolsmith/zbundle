@@ -9,14 +9,24 @@ import { pathToFileURL } from "node:url";
 import process from "node:process";
 
 /**
- * The lookup order, and it is a documented contract: TypeScript first, because
- * a typed config is the point of `defineConfig`.
+ * The lookup order, and it is a documented contract: TypeScript first, because a
+ * typed config is the point of `defineConfig`.
+ *
+ * `.cjs` is last but present: a project with `"type": "module"` needs it to write
+ * `module.exports`, and a `.cjs` config has always LOADED fine — only discovery
+ * was missing, which made it look unsupported.
+ *
+ * **`.cts` is deliberately absent.** Node's type stripping cannot express a
+ * CommonJS TypeScript config: `import` is illegal in a `.cts`, and `export =` is
+ * rejected by strip-only mode. Listing it would only surface a cryptic Node
+ * error; `loadConfigModule` says so instead.
  */
 export const CONFIG_NAMES = [
   "zbundle.config.ts",
   "zbundle.config.mts",
   "zbundle.config.js",
   "zbundle.config.mjs",
+  "zbundle.config.cjs",
 ] as const;
 
 /**
@@ -68,6 +78,19 @@ export async function loadConfigModule(file: string): Promise<unknown> {
     const mod = await dynamicImport(pathToFileURL(file).href);
     return (mod as { default?: unknown }).default ?? mod;
   } catch (err) {
+    // A `.cts` cannot work here whatever we do, so say why rather than let
+    // Node's "Cannot use import statement outside a module" stand alone.
+    if (/\.cts$/.test(file)) {
+      throw new ConfigError(
+        `cannot load ${file}\n` +
+          `  ${err instanceof Error ? err.message : String(err)}\n` +
+          `  A .cts config cannot work: Node's type stripping rejects \`export =\`, and\n` +
+          `  \`import\` is illegal in a CommonJS file. Use zbundle.config.ts, or\n` +
+          `  zbundle.config.cjs with JSDoc types:\n` +
+          `    /** @type {import("zbundle/config").Config} */\n` +
+          `    module.exports = { input: "src/index.ts" };`,
+      );
+    }
     if (!/\.m?ts$/.test(file)) throw err;
     const viaJiti = await tryJiti(file);
     if (viaJiti !== undefined) return viaJiti;

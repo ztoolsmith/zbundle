@@ -4,6 +4,48 @@ All notable changes to zbundle. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/).
 
+## [0.2.1] — 2026-07-27
+
+### Fixed
+
+- **Two entries could be written to the same file, silently.** Two entries
+  resolving to the same name — `["src/a/index.ts", "src/b/index.ts"]`, where both
+  are called `index` — or any `output.entryFileNames` without `[name]` made the
+  second bundle overwrite the first, while the recap cheerfully reported
+  "2 bundles" for the single file on disk.
+
+  Every destination is now computed **before** anything is emitted, and a
+  collision is refused with the fix for the case at hand (use the object form of
+  `input` to name the entries apart, or add `[name]` to the pattern). The check
+  runs **before `clean`**, so a config that cannot produce a coherent result no
+  longer destroys the result of the one that could.
+
+  A single entry with a fixed `entryFileNames` stays legitimate and unaffected.
+
+- **`zbundle.config.cjs` is now discovered.** It always *loaded* fine when forced
+  with `--config`, but auto-discovery skipped it — so writing one and running
+  `zbundle build` reported "no config file found" with the file sitting right
+  there. It is the only way to write `module.exports` in a `"type": "module"`
+  project, and it types perfectly well with JSDoc:
+
+  ```js
+  /** @type {import("zbundle/config").Config} */
+  module.exports = { input: "src/index.ts" };
+  ```
+
+  It comes last in the lookup order (`.ts`, `.mts`, `.js`, `.mjs`, `.cjs`), and
+  the "no config found" message is now derived from that list, so the two cannot
+  drift apart.
+
+- **A `.cts` config now says why it cannot work.** Node's type stripping rejects
+  `export =`, and `import` is illegal in a CommonJS file, so no `.cts` can import
+  `defineConfig`. It stays out of the lookup order deliberately; forcing one with
+  `--config` gives an explanation and the two working alternatives instead of
+  Node's bare "Cannot use import statement outside a module".
+
+Both found by walking every config key one by one after 0.2.0 shipped. 108 Node
+tests (+7), everything else unchanged.
+
 ## [0.2.0] — 2026-07-27
 
 **The TypeScript layer**: a config file, a typed `defineConfig`, and a real

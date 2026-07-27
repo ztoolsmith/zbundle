@@ -22,7 +22,7 @@ import process from "node:process";
 
 import { bundleWith, graphPrint, VERSION } from "../index.js";
 import { DEFAULT_EXTENSIONS } from "./config.js";
-import { findConfigFile, loadConfigModule, ConfigError } from "./load.js";
+import { findConfigFile, loadConfigModule, ConfigError, CONFIG_NAMES } from "./load.js";
 import { validate, type ResolvedConfig } from "./validate.js";
 import { runBuild, type BuildResult, type Dead, type Stats } from "./build.js";
 
@@ -164,7 +164,7 @@ async function resolveForBuild(
   if (file === null) {
     throw new ConfigError(
       `no config file found in ${cwd}\n` +
-        `  looked for: zbundle.config.ts, .mts, .js, .mjs\n` +
+        `  looked for: ${CONFIG_NAMES.join(", ")}\n` +
         `  or build a single entry directly: zbundle build src/index.ts`,
     );
   }

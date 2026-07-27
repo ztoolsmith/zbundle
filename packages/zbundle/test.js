@@ -475,7 +475,7 @@ test("live binding imported BY NAME: accepted (hoisting handles it)", () => {
 test("VERSION follows package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.2.0");
+  assert.equal(zbundle.VERSION, "0.2.1");
 });
 
 // ══════════════════ v0.3 : LE TREE-SHAKING ══════════════════
@@ -565,7 +565,7 @@ test("non-regression: the linking projects keep their behaviour", () => {
 test("VERSION matches package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.2.0");
+  assert.equal(zbundle.VERSION, "0.2.1");
 });
 
 // ══════════════════ LE CLI ══════════════════
@@ -1085,4 +1085,110 @@ test("config: a missing entry file names the path", () => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /entry not found/);
   assert.match(r.stderr, /gone\.ts/);
+});
+
+test("config: two entries writing to the SAME file is refused", () => {
+  const dir = tmpProject({
+    "src/a/index.ts": `console.log("A");`,
+    "src/b/index.ts": `console.log("B");`,
+    "zbundle.config.ts": `export default { input: ["src/a/index.ts", "src/b/index.ts"] };`,
+  });
+  // Both entries are named `index`, so both would land on dist/index.js and the
+  // second would silently overwrite the first — while the recap claims 2 bundles.
+  const r = build(dir);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /two entries would be written to the same file/);
+  assert.match(r.stderr, /Both entries are named "index"/);
+  assert.match(r.stderr, /object form of `input`/);
+  assert.ok(!exists(dir, "dist"), "something was emitted despite the collision");
+});
+
+test("config: entryFileNames without [name] collides, and says so", () => {
+  const dir = tmpProject({
+    "a.ts": `console.log("A");`,
+    "b.ts": `console.log("B");`,
+    "zbundle.config.ts": `export default {
+      input: ["a.ts", "b.ts"],
+      output: { entryFileNames: "bundle.js" },
+    };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /it has no \[name\]/);
+  // A SINGLE entry with a fixed name is legitimate and must still work.
+  fs.writeFileSync(
+    path.join(dir, "zbundle.config.ts"),
+    `export default { input: "a.ts", output: { entryFileNames: "bundle.js" } };`,
+  );
+  assert.equal(build(dir).status, 0);
+  assert.ok(exists(dir, "dist", "bundle.js"));
+});
+
+test("config: a collision is caught BEFORE clean deletes anything", () => {
+  const dir = tmpProject({
+    "src/a/index.ts": `console.log("A");`,
+    "src/b/index.ts": `console.log("B");`,
+    "zbundle.config.ts": `export default {
+      input: ["src/a/index.ts", "src/b/index.ts"],
+      output: { clean: true },
+    };`,
+  });
+  fs.mkdirSync(path.join(dir, "dist"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "dist", "previous.js"), "// the previous build");
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  // A config that cannot produce a coherent result must not have destroyed the
+  // result of the one that could.
+  assert.ok(exists(dir, "dist", "previous.js"), "clean ran before the config was rejected");
+});
+
+test("config: a .cjs config is DISCOVERED, not just loadable with --config", () => {
+  const dir = tmpProject({
+    "m.js": `console.log("cjs");`,
+    // `"type": "module"` is exactly the project where .cjs is the only way to
+    // write `module.exports` — and where a member is most likely to reach for it.
+    "package.json": `{ "type": "module" }`,
+    "zbundle.config.cjs": `/** @type {import("zbundle/config").Config} */
+module.exports = { input: "m.js" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(exists(dir, "dist", "m.js"));
+});
+
+test("config: .cjs comes LAST in the lookup order", () => {
+  const dir = tmpProject({
+    "a.js": `console.log("ts wins");`,
+    "b.js": `console.log("cjs");`,
+    "zbundle.config.cjs": `module.exports = { input: "b.js" };`,
+    "zbundle.config.ts": `export default { input: "a.js" };`,
+  });
+  assert.equal(build(dir).status, 0);
+  assert.ok(exists(dir, "dist", "a.js"));
+  assert.ok(!exists(dir, "dist", "b.js"));
+});
+
+test("config: the 'no config found' message lists every name actually tried", () => {
+  const dir = tmpProject({ "m.js": `console.log(1);` });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  // Derived from CONFIG_NAMES, so the message can never drift from the lookup.
+  for (const ext of ["ts", "mts", "js", "mjs", "cjs"]) {
+    assert.match(r.stderr, new RegExp(`zbundle\\.config\\.${ext}`));
+  }
+});
+
+test("config: a .cts config says WHY it cannot work, and what to use instead", () => {
+  const dir = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.cts": `import { defineConfig } from "zbundle/config";
+export default defineConfig({ input: "m.js" });`,
+  });
+  // Not discovered (absent from CONFIG_NAMES)…
+  assert.match(build(dir).stderr, /no config file found/);
+  // …and forcing it gives a real explanation, not Node's raw complaint alone.
+  const forced = build(dir, ["--config", "zbundle.config.cts"]);
+  assert.equal(forced.status, 1);
+  assert.match(forced.stderr, /A \.cts config cannot work/);
+  assert.match(forced.stderr, /zbundle\.config\.cjs with JSDoc types/);
 });

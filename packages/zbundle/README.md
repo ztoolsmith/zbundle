@@ -78,7 +78,10 @@ export default defineConfig({
 | `resolve.extensions` | `['.ts','.tsx','.js','.jsx','.mjs']` | order is meaning |
 | `minify` | `mode === 'production'` | shortens cross-module names |
 
-Lookup order: `zbundle.config.ts` → `.mts` → `.js` → `.mjs`, or `--config`.
+Lookup order: `zbundle.config.ts` → `.mts` → `.js` → `.mjs` → `.cjs`, or
+`--config`. A `.cjs` config types fine with JSDoc
+(`/** @type {import("zbundle/config").Config} */`); `.cts` is not supported —
+Node's type stripping cannot express a CommonJS TypeScript module.
 TypeScript loads through Node's own type stripping (22.6+), so nothing extra is
 installed; jiti is used as a fallback when the project already has it.
 
@@ -255,7 +258,7 @@ in the bundle. zbundle builds libraries, not applications, for now.
 | | |
 |---|---|
 | Zig tests | 84 |
-| Node tests | 101 |
+| Node tests | 108 |
 | the judge (the bundle runs and says what the original says) | **21/21** |
 | graph fixtures | 12/12 |
 | real-world projects | 3/3 |
