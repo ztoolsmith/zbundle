@@ -28,6 +28,46 @@ const Dir = std.Io.Dir;
 /// as esbuild's `resolveExtensions`, minus `.css`/`.json` (no asset loaders).
 pub const EXTENSIONS = [_][]const u8{ ".ts", ".tsx", ".js", ".jsx", ".mjs" };
 
+/// One alias: a specifier PREFIX and what it expands to.
+///
+/// `to` is expected ABSOLUTE. The TS layer resolves it against the directory of
+/// the **config file** — not the cwd — before handing it over: a config is read
+/// relative to where it lives, and doing it up there keeps this file free of any
+/// notion of "project root".
+pub const Alias = struct { from: []const u8, to: []const u8 };
+
+/// What the build layer is allowed to change about resolution. The defaults ARE
+/// the historical behaviour, so `.{}` resolves exactly as before.
+pub const Config = struct {
+    /// Try order for an omitted extension. Order is meaning, not preference.
+    extensions: []const []const u8 = &EXTENSIONS,
+    /// Prefix aliases, applied BEFORE the bare-specifier test.
+    alias: []const Alias = &.{},
+};
+
+/// Expands the first matching alias, or null.
+///
+/// **Exact prefix substitution**, deliberately: `'@' -> '/p/src'` turns `'@/x'`
+/// into `'/p/src/x'`. No regex, no multiple fallback. The consequence is worth
+/// stating: `'@foo'` also matches `'@'` and becomes `'/p/srcfoo'` — which is why
+/// an alias key is normally written with its separator (`'@/'`).
+///
+/// When several aliases match, the LONGEST prefix wins: without that rule `'@'`
+/// would shadow `'@scope'` depending on declaration order, and a config's
+/// meaning must not depend on key order.
+fn applyAlias(a: Allocator, cfg: Config, specifier: []const u8) Allocator.Error!?[]const u8 {
+    var best: ?Alias = null;
+    for (cfg.alias) |al| {
+        if (!std.mem.startsWith(u8, specifier, al.from)) continue;
+        if (best == null or al.from.len > best.?.from.len) best = al;
+    }
+    const hit = best orelse return null;
+    // Separate statement: `[]u8` does not coerce into the `?[]const u8` payload
+    // of an error union directly.
+    const expanded = try std.mem.concat(a, u8, &.{ hit.to, specifier[hit.from.len..] });
+    return expanded;
+}
+
 /// A module's format, derived from its EXTENSION (like esbuild/oxc — and like
 /// zcompiler's own harness). Drives the parse mode.
 pub const Format = enum {
@@ -86,13 +126,35 @@ pub fn isBare(specifier: []const u8) bool {
     return !std.fs.path.isAbsolute(specifier);
 }
 
+/// Would this specifier be left to the runtime? Bare AND matched by no alias.
+///
+/// The graph asks this **before** calling `resolve` (it files externals without
+/// touching the disk), so the answer has to account for aliases here too —
+/// otherwise `'@/x'` would be filed as an external and the alias would never
+/// fire. One rule, one place: `resolve` calls this very function.
+pub fn isExternal(cfg: Config, specifier: []const u8) bool {
+    if (!isBare(specifier)) return false;
+    for (cfg.alias) |al| {
+        if (std.mem.startsWith(u8, specifier, al.from)) return false;
+    }
+    return true;
+}
+
 /// Resolves `specifier` from `from_dir`.
 ///
 /// Try order (the contract):
+///   0. an ALIAS whose prefix matches -> substitute, and the result is NEVER
+///      external (see below);
 ///   1. BARE specifier -> `.external`, stop there (never an error);
 ///   2. the path AS IS if it carries a known extension;
 ///   3. otherwise `<path>.ts`, `.tsx`, `.js`, `.jsx`, `.mjs` (in that order);
 ///   4. then `<path>/index.<ext>` in the SAME order (directory resolution).
+///
+/// **Aliases run BEFORE the bare test, and that ordering is the whole point.**
+/// `'@'` and `'~'` are bare-looking; if the test came first they would leave as
+/// externals and the alias would never fire. So an aliased specifier that does
+/// not exist on disk is an ERROR, not a silent external — otherwise a typo in an
+/// aliased import would sail through and only surface at runtime.
 ///
 /// The returned path is **canonical** (`realPath`: symlinks followed, case
 /// corrected on a case-insensitive filesystem such as macOS). That is what
@@ -103,25 +165,29 @@ pub fn resolve(
     io: Io,
     from_dir: []const u8,
     specifier: []const u8,
+    cfg: Config,
     diag: *Diagnostic,
 ) Error!Resolution {
-    if (isBare(specifier)) return .{ .kind = .external, .path = specifier };
+    if (isExternal(cfg, specifier)) return .{ .kind = .external, .path = specifier };
+    const spec = (try applyAlias(a, cfg, specifier)) orelse specifier;
 
-    const base = try std.fs.path.resolve(a, &.{ from_dir, specifier });
+    const base = try std.fs.path.resolve(a, &.{ from_dir, spec });
     var tried: std.ArrayList([]const u8) = .empty;
 
-    if (hasKnownExtension(base)) {
+    if (hasKnownExtension(base, cfg.extensions)) {
         if (try tryFile(a, io, base, &tried)) |hit| return hit;
     } else {
-        for (EXTENSIONS) |ext| {
+        for (cfg.extensions) |ext| {
             if (try tryFile(a, io, try std.mem.concat(a, u8, &.{ base, ext }), &tried)) |hit| return hit;
         }
-        for (EXTENSIONS) |ext| {
+        for (cfg.extensions) |ext| {
             const leaf = try std.mem.concat(a, u8, &.{ "index", ext });
             if (try tryFile(a, io, try std.fs.path.join(a, &.{ base, leaf }), &tried)) |hit| return hit;
         }
     }
 
+    // The ORIGINAL specifier is reported: that is what the user wrote. The
+    // attempted paths below already show what the alias expanded it to.
     diag.* = .{ .specifier = specifier, .tried = tried.items };
     return error.NotFound;
 }
@@ -133,9 +199,9 @@ fn tryFile(a: Allocator, io: Io, cand: []const u8, tried: *std.ArrayList([]const
     return .{ .kind = .file, .path = real };
 }
 
-fn hasKnownExtension(path: []const u8) bool {
+fn hasKnownExtension(path: []const u8, extensions: []const []const u8) bool {
     const ext = std.fs.path.extension(path);
-    for (EXTENSIONS) |known| {
+    for (extensions) |known| {
         if (std.mem.eql(u8, ext, known)) return true;
     }
     return false;
@@ -204,8 +270,12 @@ const Sandbox = struct {
     /// (readable comparisons, independent of the tmpdir path). The result being
     /// canonical, it necessarily starts with `root` plus a separator.
     fn rel(self: *Sandbox, specifier: []const u8) ![]const u8 {
+        return self.relCfg(specifier, .{});
+    }
+    /// Same, with an explicit resolution config (aliases, custom table).
+    fn relCfg(self: *Sandbox, specifier: []const u8, cfg: Config) ![]const u8 {
         var diag: Diagnostic = .{};
-        const r = try resolve(self.a(), io, self.root, specifier, &diag);
+        const r = try resolve(self.a(), io, self.root, specifier, cfg, &diag);
         if (r.kind == .external) return r.path;
         try std.testing.expect(std.mem.startsWith(u8, r.path, self.root));
         return r.path[self.root.len + 1 ..];
@@ -284,7 +354,7 @@ test "bare specifier -> external (never an error)" {
     defer s.deinit();
     for ([_][]const u8{ "react", "@scope/pkg", "lodash/merge", "node:fs" }) |spec| {
         var diag: Diagnostic = .{};
-        const r = try resolve(s.a(), Sandbox.io, s.root, spec, &diag);
+        const r = try resolve(s.a(), Sandbox.io, s.root, spec, .{}, &diag);
         try std.testing.expectEqual(Kind.external, r.kind);
         try std.testing.expectEqualStrings(spec, r.path);
     }
@@ -303,7 +373,7 @@ test "not found: the error lists ALL attempted paths, in order" {
     var s = try Sandbox.init(std.testing.allocator);
     defer s.deinit();
     var diag: Diagnostic = .{};
-    try std.testing.expectError(error.NotFound, resolve(s.a(), Sandbox.io, s.root, "./missing", &diag));
+    try std.testing.expectError(error.NotFound, resolve(s.a(), Sandbox.io, s.root, "./missing", .{}, &diag));
     // 5 extensions + 5 index.<ext> = 10 candidates, in table order.
     try std.testing.expectEqual(@as(usize, 10), diag.tried.len);
     try std.testing.expect(std.mem.endsWith(u8, diag.tried[0], "missing.ts"));
@@ -320,7 +390,7 @@ test "a directory does not resolve to itself (without an index)" {
     defer s.deinit();
     try s.write("dir/other.ts", "");
     var diag: Diagnostic = .{};
-    try std.testing.expectError(error.NotFound, resolve(s.a(), Sandbox.io, s.root, "./dir", &diag));
+    try std.testing.expectError(error.NotFound, resolve(s.a(), Sandbox.io, s.root, "./dir", .{}, &diag));
 }
 
 test "formatOf: the extension decides the parse mode" {
@@ -331,4 +401,99 @@ test "formatOf: the extension decides the parse mode" {
     try std.testing.expectEqual(Format.js, formatOf("/a/b.mjs"));
     try std.testing.expect(Format.tsx.flags().jsx and Format.tsx.flags().ts);
     try std.testing.expect(!Format.js.flags().jsx and !Format.js.flags().ts);
+}
+
+// ---- aliases and a custom extension table (the build layer's two knobs) ----
+
+/// An absolute alias target, built inside the sandbox.
+fn aliasTo(s: *Sandbox, sub: []const u8) ![]const u8 {
+    return std.fs.path.join(s.a(), &.{ s.root, sub });
+}
+
+test "alias: the prefix is substituted" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("src/utils.ts", "");
+    const cfg: Config = .{ .alias = &.{.{ .from = "@", .to = try aliasTo(&s, "src") }} };
+    try std.testing.expectEqualStrings("src/utils.ts", try s.relCfg("@/utils", cfg));
+}
+
+test "alias: a non-matching specifier is untouched (stays external)" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    const cfg: Config = .{ .alias = &.{.{ .from = "@", .to = try aliasTo(&s, "src") }} };
+    // `react` does not start with `@`: the alias never fires, the bare rule does.
+    try std.testing.expectEqualStrings("react", try s.relCfg("react", cfg));
+}
+
+test "alias: it runs BEFORE the external test" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("src/x.ts", "");
+    const cfg: Config = .{ .alias = &.{.{ .from = "@", .to = try aliasTo(&s, "src") }} };
+    // `@/x` IS bare-looking. Without alias-first it would leave as an external
+    // and never touch the disk — this is the ordering guarantee, pinned.
+    const got = try s.relCfg("@/x", cfg);
+    try std.testing.expectEqualStrings("src/x.ts", got);
+    // …and the same specifier WITHOUT the alias config is indeed external.
+    try std.testing.expectEqualStrings("@/x", try s.rel("@/x"));
+}
+
+test "alias: an aliased specifier that is missing is an ERROR, never an external" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    const cfg: Config = .{ .alias = &.{.{ .from = "@", .to = try aliasTo(&s, "src") }} };
+    var diag: Diagnostic = .{};
+    try std.testing.expectError(
+        error.NotFound,
+        resolve(s.a(), Sandbox.io, s.root, "@/nope", cfg, &diag),
+    );
+    // The message quotes what the USER wrote, not the expansion.
+    try std.testing.expectEqualStrings("@/nope", diag.specifier);
+    try std.testing.expect(diag.tried.len > 0);
+}
+
+test "alias: the longest prefix wins, whatever the declaration order" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("short/a.ts", "");
+    try s.write("long/a.ts", "");
+    const short: Alias = .{ .from = "@", .to = try aliasTo(&s, "short") };
+    const long: Alias = .{ .from = "@lib", .to = try aliasTo(&s, "long") };
+    // Both orders must give the same answer: a config's meaning does not depend
+    // on key order.
+    try std.testing.expectEqualStrings("long/a.ts", try s.relCfg("@lib/a", .{ .alias = &.{ short, long } }));
+    try std.testing.expectEqualStrings("long/a.ts", try s.relCfg("@lib/a", .{ .alias = &.{ long, short } }));
+}
+
+test "custom extension table: order and membership both obey it" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("x.ts", "");
+    try s.write("x.js", "");
+    // Reversed table: `.js` must now win over `.ts`.
+    const cfg: Config = .{ .extensions = &.{ ".js", ".ts" } };
+    try std.testing.expectEqualStrings("x.js", try s.relCfg("./x", cfg));
+}
+
+test "custom extension table: an extension outside the table is not 'known'" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("x.mts", "");
+    // `.mts` is absent from the default table, so `./x.mts` is treated as a
+    // path WITHOUT a known extension -> `./x.mts.ts`, `.tsx`… all miss.
+    var diag: Diagnostic = .{};
+    try std.testing.expectError(
+        error.NotFound,
+        resolve(s.a(), Sandbox.io, s.root, "./x.mts", .{}, &diag),
+    );
+    // Add it to the table and the very same specifier resolves.
+    try std.testing.expectEqualStrings("x.mts", try s.relCfg("./x.mts", .{ .extensions = &.{".mts"} }));
+}
+
+test "custom extension table: index resolution follows it too" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("dir/index.mjs", "");
+    try std.testing.expectEqualStrings("dir/index.mjs", try s.relCfg("./dir", .{ .extensions = &.{".mjs"} }));
 }

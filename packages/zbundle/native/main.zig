@@ -20,7 +20,7 @@ const Allocator = std.mem.Allocator;
 
 /// zbundle's version (mirrors `package.json`). A **module constant** — zignapi
 /// registers non-function values as they are.
-pub const VERSION = "0.1.1";
+pub const VERSION = "0.2.0";
 
 /// The `Io` for one call (Zig 0.16: all disk access goes through this
 /// interface). The single-threaded variant starts no worker and allocates
@@ -39,7 +39,9 @@ fn blockingIo(t: *std.Io.Threaded) std.Io {
 fn graphImpl(a: Allocator, entry: []const u8) !graph.Graph {
     var t: std.Io.Threaded = undefined;
     var err: graph.BuildError = .{};
-    const built = graph.build(a, blockingIo(&t), entry, &err) catch |e| switch (e) {
+    // `.{}` = the default resolution. ONE crossing was specified, and it is
+    // `bundleWith`; `graph`/`resolve` stay the raw, unconfigured probes.
+    const built = graph.build(a, blockingIo(&t), entry, .{}, &err) catch |e| switch (e) {
         error.OutOfMemory => return e,
         error.BuildFailed => return zignapi.fail(err.message),
     };
@@ -65,7 +67,7 @@ fn graphPrint(a: Allocator, entry: []const u8) ![]const u8 {
 fn resolveImpl(a: Allocator, from_dir: []const u8, specifier: []const u8) !resolver.Resolution {
     var t: std.Io.Threaded = undefined;
     var diag: resolver.Diagnostic = .{};
-    return resolver.resolve(a, blockingIo(&t), from_dir, specifier, &diag) catch |e| switch (e) {
+    return resolver.resolve(a, blockingIo(&t), from_dir, specifier, .{}, &diag) catch |e| switch (e) {
         error.OutOfMemory => return e,
         error.NotFound => return zignapi.fail(try resolver.formatError(a, diag, "")),
     };
@@ -109,14 +111,30 @@ fn bundleReport(a: Allocator, entry: []const u8) !linker.Report {
     };
 }
 
-/// The options as written in JS: `{ format: 'esm' | 'iife', dead: bool }`.
-/// zignapi converts the JS object into a struct, field by field.
+/// The options as written in JS:
+/// `{ format: 'esm' | 'iife', dead, minify, resolve: { alias, extensions } }`.
+///
+/// `resolve` is **`resolver.Config` itself**, not a mirror of it: zignapi
+/// converts the JS object field by field, recursively (an array of
+/// `{ from, to }` becomes `[]Alias`, an array of strings becomes
+/// `[]const []const u8`). This is the file's founding principle applied to an
+/// input rather than an output — the Zig type IS the JS shape, so there is no
+/// second definition to keep in sync.
+///
+/// **One crossing, at the start of the build.** The TS layer has already done
+/// its job by then: keys validated, aliases made absolute against the config
+/// file's directory, reserved options refused. What arrives here is settled.
 const JsOptions = struct {
     format: []const u8 = "esm",
     dead: bool = false,
+    /// Shorten cross-module names. NOT a full minifier: the printer still emits
+    /// readable, indented JS. Compact output would need a compact mode in
+    /// zcompiler's printer — that belongs downstairs, not here.
+    minify: bool = false,
+    resolve: resolver.Config = .{},
 };
 
-/// bundleWith(entryPath, { format, dead }) -> { code, stats, dead }.
+/// bundleWith(entryPath, { format, dead, minify, resolve }) -> { code, stats, dead }.
 /// The CLI's entry point: a single call for everything it can do.
 fn bundleWith(a: Allocator, entry: []const u8, opts: JsOptions) !linker.Report {
     const format: linker.Format = if (std.mem.eql(u8, opts.format, "iife"))
@@ -132,7 +150,12 @@ fn bundleWith(a: Allocator, entry: []const u8, opts: JsOptions) !linker.Report {
 
     var t: std.Io.Threaded = undefined;
     var err: linker.BundleError = .{};
-    return linker.bundleReport(a, blockingIo(&t), entry, &err, opts.dead, .{ .format = format }) catch |e| switch (e) {
+    const options: linker.Options = .{
+        .format = format,
+        .minify = opts.minify,
+        .resolve = opts.resolve,
+    };
+    return linker.bundleReport(a, blockingIo(&t), entry, &err, opts.dead, options) catch |e| switch (e) {
         error.OutOfMemory => return e,
         error.BundleFailed => return zignapi.fail(err.message),
     };

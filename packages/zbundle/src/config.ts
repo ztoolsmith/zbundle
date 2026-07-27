@@ -1,0 +1,115 @@
+//! The PUBLIC config API — the types a user writes against, and nothing else.
+//!
+//! This file is the package's typed surface (`zbundle/config`). It holds no
+//! logic on purpose: types, defaults, and `defineConfig`, which is the typed
+//! identity function. Loading lives in `load.ts`, checking in `validate.ts`,
+//! orchestration in `build.ts`.
+//!
+//! **The boundary this layer serves** (the rule for the whole package): what is
+//! decided *per module* belongs to Zig, what is decided *per build* belongs
+//! here. Resolving a specifier, walking the graph, linking, shaking — per
+//! module, all Zig. Reading a config file, expanding an input, naming an output
+//! file, cleaning a directory — per build, all TypeScript. This layer
+//! ORCHESTRATES; it never computes.
+
+/**
+ * The build mode.
+ *
+ * **In v1 its ONLY effect is the default value of `minify`** — nothing else.
+ * No `define`, no `process.env.NODE_ENV` injection, no conditional exports
+ * resolution. Saying so explicitly matters: `mode` looks like it does much more
+ * in other bundlers, and a silent difference would be worse than a missing
+ * feature.
+ */
+export type Mode = "development" | "production";
+
+/** The only output format v1 emits. The type says it, so does the validator. */
+export type Format = "esm";
+
+export interface ResolveOptions {
+  /**
+   * Prefix aliases: `{ '@': './src' }` turns `'@/x'` into `'./src/x'`.
+   *
+   * **Exact prefix substitution** — no regex, no multiple fallback. A relative
+   * target is resolved against the directory of the CONFIG FILE, never the cwd:
+   * a config describes paths relative to where it lives, so moving the working
+   * directory must not change what it means.
+   *
+   * An aliased specifier is never external: if it does not exist on disk, the
+   * build fails rather than silently leaving an unresolved import in the bundle.
+   */
+  alias?: Record<string, string>;
+  /**
+   * Try order for an omitted extension. Order is meaning, not preference:
+   * `.ts` before `.js` is what makes a TS project see its source rather than a
+   * stale compiled sibling. Defaults to {@link DEFAULT_EXTENSIONS}.
+   */
+  extensions?: string[];
+}
+
+export interface OutputOptions {
+  /** Where bundles are written. Default: `'dist'`. */
+  dir?: string;
+  /** Only `'esm'` in v1. Anything else is refused, with the target version. */
+  format?: Format;
+  /**
+   * The output file name pattern. `[name]` is the ONLY placeholder, and it is
+   * the entry's name: the basename for a string/array input, the KEY for an
+   * object input. A key containing `/` (`'cli/index'`) creates the
+   * subdirectories under `dir`. Default: `'[name].js'`.
+   */
+  entryFileNames?: string;
+  /** Empty `dir` before emitting. Default: `false`. */
+  clean?: boolean;
+}
+
+export interface Config {
+  /** Default: `'development'`. Its only v1 effect is the `minify` default. */
+  mode?: Mode;
+  /**
+   * What to bundle. Three shapes:
+   *   - `'src/index.ts'` — one bundle, named after the file;
+   *   - `['a.ts', 'b.ts']` — N INDEPENDENT bundles (no shared chunk: that is
+   *     code splitting, and it is not v1);
+   *   - `{ main: 'src/index.ts', 'cli/index': 'src/cli.ts' }` — the same, with
+   *     the output names chosen by key.
+   * Relative paths are resolved against the config file's directory.
+   */
+  input: string | string[] | Record<string, string>;
+  output?: OutputOptions;
+  resolve?: ResolveOptions;
+  /**
+   * Shorten cross-module names. Default: `mode === 'production'`.
+   *
+   * **What it really does**, so nobody is surprised: it renames top-level
+   * bindings to short names across the whole bundle, with the guarantee that a
+   * short name never shadows a local or captures a global. It does NOT strip
+   * whitespace or shorten properties — the emitted JS stays indented and
+   * readable. Compact output needs a compact printer in zcompiler; that work
+   * belongs downstairs, not here.
+   */
+  minify?: boolean;
+  /** RESERVED — setting it to `true` is an error that names the target version. */
+  sourcemap?: boolean;
+  /** RESERVED — setting it to `true` is an error that names the target version. */
+  watch?: boolean;
+}
+
+/** The resolver's extension table, mirrored here as the documented default. */
+export const DEFAULT_EXTENSIONS: readonly string[] = [".ts", ".tsx", ".js", ".jsx", ".mjs"];
+
+export const DEFAULT_OUT_DIR = "dist";
+export const DEFAULT_ENTRY_FILE_NAMES = "[name].js";
+
+/**
+ * The typed identity function. It returns its argument untouched; its whole job
+ * is to give an editor something to check a `zbundle.config.ts` against.
+ *
+ * ```ts
+ * import { defineConfig } from "zbundle/config";
+ * export default defineConfig({ input: "src/index.ts" });
+ * ```
+ */
+export function defineConfig(config: Config): Config {
+  return config;
+}

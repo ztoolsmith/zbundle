@@ -24,6 +24,20 @@ zbundle src/index.tsx -o dist/bundle.js
   4022 → 260 bytes (6 %) in 2.5 ms  esm
 ```
 
+Two shapes, and both are first-class. **The project shape** reads a config file
+and may emit several bundles:
+
+```
+zbundle build                    build from zbundle.config.ts
+zbundle build <entry>            build one entry, ignoring any config
+  -c, --config <file>            config file (.ts, .mts, .js, .mjs)
+      --out-dir <dir>            override output.dir
+      --minify                   override minify
+```
+
+**The one-shot shape** takes no config, emits one bundle, and writes to stdout by
+default — which is what makes it usable in a pipe:
+
 ```
 zbundle <entry> [-o <file>]      bundle (statistics go to stderr)
   -f, --format esm|iife          iife: everything in an IIFE, needs zero externals
@@ -37,6 +51,52 @@ zbundle <entry> [-o <file>]      bundle (statistics go to stderr)
 clean file *and* readable numbers on screen. A refusal exits with **code 1**, its
 explanation intact, and writes **nothing** to stdout — a pipe never receives
 invalid JS.
+
+## The config
+
+```ts
+// zbundle.config.ts
+import { defineConfig } from "zbundle/config";
+
+export default defineConfig({
+  mode: "production",                       // its ONLY effect: minify defaults to true
+  input: { main: "src/index.ts", "cli/index": "src/cli.ts" },
+  output: { dir: "dist", clean: true },     // a key with a slash nests the output
+  resolve: { alias: { "@/": "./src/" } },   // relative to THIS FILE, not the cwd
+});
+```
+
+| key | default | notes |
+|---|---|---|
+| `mode` | `'development'` | its ONLY v1 effect is the `minify` default |
+| `input` | *required* | `string`, `string[]`, or `Record<name, file>` |
+| `output.dir` | `'dist'` | |
+| `output.format` | `'esm'` | the only format; `iife` lives on the CLI |
+| `output.entryFileNames` | `'[name].js'` | `[name]` is the only placeholder |
+| `output.clean` | `false` | refuses to empty the cwd or any ancestor |
+| `resolve.alias` | `{}` | exact PREFIX substitution, applied before the external test |
+| `resolve.extensions` | `['.ts','.tsx','.js','.jsx','.mjs']` | order is meaning |
+| `minify` | `mode === 'production'` | shortens cross-module names |
+
+Lookup order: `zbundle.config.ts` → `.mts` → `.js` → `.mjs`, or `--config`.
+TypeScript loads through Node's own type stripping (22.6+), so nothing extra is
+installed; jiti is used as a fallback when the project already has it.
+
+**Command line > config file > defaults.**
+
+### What it refuses, and why
+
+> An option that is accepted must ACT.
+
+`sourcemap: true` (v0.3), `watch: true` (v0.4), `output.chunkFileNames` and
+`output.assetFileNames` (v0.5), an `output.format` other than `esm`, and an
+unknown `entryFileNames` placeholder are **errors** that name the version they
+are planned for. Accepting one of them and quietly doing nothing would be the
+worst of the possible behaviours. Setting `sourcemap: false` or `watch: false` is
+fine — that is what zbundle does today.
+
+An unknown key is only a **warning**, with the closest match suggested, and the
+build carries on: a typo should not stop your work.
 
 ## The API
 
@@ -194,9 +254,9 @@ in the bundle. zbundle builds libraries, not applications, for now.
 
 | | |
 |---|---|
-| Zig tests | 68 |
-| Node tests | 66 |
-| the judge (the bundle runs and says what the original says) | **20/20** |
+| Zig tests | 84 |
+| Node tests | 101 |
+| the judge (the bundle runs and says what the original says) | **21/21** |
 | graph fixtures | 12/12 |
 | real-world projects | 3/3 |
 | real world | **lodash-es: 172 modules, 131 → 81 KB, 30 ms**, identical output |

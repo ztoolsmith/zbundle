@@ -69,6 +69,20 @@ says** (`playground/run.mjs`) — the bundler's round-trip.
 
 ## The command
 
+Two shapes, and both are first-class.
+
+**The project shape** — a config file, possibly several bundles:
+
+```
+zbundle build                    build from zbundle.config.ts
+zbundle build <entry>            build one entry, ignoring any config
+  -c, --config <file>            config file (.ts, .mts, .js, .mjs)
+      --out-dir <dir>            override output.dir
+      --minify                   override minify
+```
+
+**The one-shot shape** — no config, one bundle, stdout by default:
+
 ```
 zbundle <entry> [-o <file>]      bundle (statistics go to stderr)
   -f, --format esm|iife          iife: everything in an IIFE, needs zero externals
@@ -80,6 +94,34 @@ zbundle <entry> [-o <file>]      bundle (statistics go to stderr)
 
 A refusal exits with **code 1** and its explanation, and writes **nothing** to
 stdout — a pipe never receives invalid JS.
+
+## The config
+
+```ts
+// zbundle.config.ts
+import { defineConfig } from "zbundle/config";
+
+export default defineConfig({
+  mode: "production",                       // its ONLY effect: minify defaults to true
+  input: { main: "src/index.ts", "cli/index": "src/cli.ts" },
+  output: { dir: "dist", clean: true },     // a key with a slash nests the output
+  resolve: { alias: { "@/": "./src/" } },   // relative to THIS FILE, not the cwd
+});
+```
+
+Command-line options win over the config file, which wins over the defaults.
+TypeScript configs load through Node's own type stripping (22.6+) — no
+dependency; jiti is used as a fallback if your project happens to have it.
+
+**An option that is accepted must act.** `sourcemap: true`, `watch: true`,
+`output.chunkFileNames`, `output.assetFileNames` and any `output.format` other
+than `esm` are therefore **errors** naming the version they are planned for —
+never options quietly ignored. An unknown key is only a warning, with a
+suggestion (`unknown option minfy — did you mean minify?`).
+
+`minify` shortens cross-module names, with the guarantee that a short name never
+shadows a local or captures a global. It does not strip whitespace: the output
+stays indented and readable.
 
 ## Getting started
 
@@ -115,17 +157,16 @@ stay in the bundle. zbundle builds libraries, not applications, for now.
 
 | | |
 |---|---|
-| Zig tests | 68 |
-| Node tests | 66 |
-| playground (the judge) | **20/20** — the bundle says what the original says, and dead code is gone |
+| Zig tests | 84 |
+| Node tests | 101 |
+| playground (the judge) | **21/21** — the bundle says what the original says, and dead code is gone (4 projects judged through the CLI, config included) |
 | graph fixtures | 12/12 |
 | real-world projects | 3/3 |
 | real world | **lodash-es: 172 modules, 131 → 81 KB, 30 ms**, identical output |
 
 ## Roadmap
 
-- **next** — cross-module minification (zcompiler's mangler already exists), then
-  source maps.
+- **next** — source maps (v0.3), then a real watch mode (v0.4).
 - **after** — `node_modules` (real package resolution, and the `sideEffects`
   field that comes with it) and code splitting (`is_dynamic` edges are already in
   the graph).

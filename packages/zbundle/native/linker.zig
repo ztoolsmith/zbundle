@@ -57,7 +57,15 @@ pub const Format = enum {
     iife,
 };
 
-pub const Options = struct { format: Format = .esm };
+pub const Options = struct {
+    format: Format = .esm,
+    /// What the build layer changed about resolution (extension table,
+    /// aliases). Handed straight to `graph.build`.
+    resolve: resolver.Config = .{},
+    /// Shorten every top-level binding instead of keeping its source name.
+    /// See `assignNames` for exactly what this does — and does not — do.
+    minify: bool = false,
+};
 
 pub const Stats = struct {
     /// Modules actually EMITTED (after shaking).
@@ -152,6 +160,8 @@ const Linker = struct {
     units_alive: u32 = 0,
     opts: Options = .{},
     entry_exports: u32 = 0,
+    /// Cursor of the short-name generator (minify only).
+    short_seq: u32 = 0,
 
     fn fail(self: *Linker, comptime fmt: []const u8, args: anytype) Error {
         self.err.message = std.fmt.allocPrint(self.a, fmt, args) catch "bundle failed";
@@ -360,6 +370,42 @@ const Linker = struct {
         }
     }
 
+    /// A SHORT free name: `a`, `b`, … `z`, `aa`, `ab`… (bijective base 26 — the
+    /// mangler's scheme, transposed to bundle scale). Anything already taken is
+    /// skipped, and `used` was seeded with the reserved words, every global AND
+    /// (under minify) every local — so a short name can shadow nothing.
+    fn uniqueShort(self: *Linker) Error![]const u8 {
+        while (true) {
+            const cand = try shortName(self.a, self.short_seq);
+            self.short_seq += 1;
+            if (self.used.contains(cand)) continue;
+            try self.used.put(self.a, cand, {});
+            self.renamed += 1;
+            return cand;
+        }
+    }
+
+    /// **The correctness guard of `minify`.** Short names would otherwise collide
+    /// with LOCALS: renaming a top-level `helper` to `a` while some function body
+    /// declares its own `const a` silently rebinds every call to it — a bug you
+    /// only find at runtime.
+    ///
+    /// So every name declared ANYWHERE (every scope of every module, not just the
+    /// module scope) is reserved up front. Conservative — it burns short names —
+    /// and correct by construction. It is precisely what the mangler does with its
+    /// ancestor set, at the scale of the whole bundle.
+    ///
+    /// Only called under minify: in normal mode it would reserve the very names
+    /// `assignNames` is trying to keep, and push everything to `name$1`.
+    fn reserveLocals(self: *Linker) Error!void {
+        for (self.mods) |m| {
+            for (m.sem.scopes.items) |sc| {
+                var it = sc.bindings.keyIterator();
+                while (it.next()) |name| try self.used.put(self.a, name.*, {});
+            }
+        }
+    }
+
     /// Reserves untouchable names: reserved words plus every UNRESOLVED name
     /// from every module (the globals — `console`, `process`, `Math`…). Without
     /// this, a local binding could be renamed to `console` and capture the
@@ -393,19 +439,35 @@ const Linker = struct {
                 // eliminated `helper` would push another module's live `helper`
                 // to `helper$1`, for nothing.
                 if (!self.live.contains(b)) continue;
-                const final = try self.unique(b.name);
+                const final = if (self.opts.minify) try self.uniqueShort() else try self.unique(b.name);
                 if (!std.mem.eql(u8, final, b.name)) b.new_name = final;
             }
             // `export default <expression>`: no binding, so we synthesize one.
             for (m.info.exports) |e| {
                 if (e.kind != .default_expr) continue;
                 if (!self.defaultAlive(m.id)) continue;
-                m.default_name = try self.unique(try std.fmt.allocPrint(self.a, "{s}_default", .{self.stem(m.path)}));
+                m.default_name = if (self.opts.minify)
+                    try self.uniqueShort()
+                else
+                    try self.unique(try std.fmt.allocPrint(self.a, "{s}_default", .{self.stem(m.path)}));
             }
         }
     }
 
-    /// A binding's final name: its `new_name` if renamed, otherwise its own.
+    /// `n` -> `a`, `b`, … `z`, `aa`, `ab`, … (bijective base 26).
+fn shortName(a: Allocator, n: u32) Error![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    var v = n;
+    while (true) {
+        try buf.append(a, 'a' + @as(u8, @intCast(v % 26)));
+        if (v < 26) break;
+        v = v / 26 - 1;
+    }
+    std.mem.reverse(u8, buf.items);
+    return buf.items;
+}
+
+/// A binding's final name: its `new_name` if renamed, otherwise its own.
     fn finalOf(_: *Linker, b: *zc.semantic.Binding) []const u8 {
         return b.currentName();
     }
@@ -1091,7 +1153,7 @@ pub fn bundleReport(a: Allocator, io: Io, entry: []const u8, err: *BundleError, 
     const t0 = Io.Clock.awake.now(io).nanoseconds;
 
     var gerr: graph.BuildError = .{};
-    const built = graph.build(a, io, entry, &gerr) catch |e| switch (e) {
+    const built = graph.build(a, io, entry, opts.resolve, &gerr) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.BuildFailed => {
             err.message = gerr.message;
@@ -1124,6 +1186,7 @@ pub fn bundleReport(a: Allocator, io: Io, entry: []const u8, err: *BundleError, 
     // an eliminated `helper` would push a live `helper` to `helper$1`).
     try l.mark();
     try l.reserveNames();
+    if (opts.minify) try l.reserveLocals();
     try l.assignNames();
     try l.linkImports();
     try l.checkNamespaceSnapshots();
@@ -1232,6 +1295,16 @@ const Sandbox = struct {
             return e;
         };
         return b.code;
+    }
+    /// A bundle with explicit options (minify, aliases, custom table).
+    fn codeWith(self: *Sandbox, entry: []const u8, opts: Options) ![]const u8 {
+        var err: BundleError = .{};
+        const full = try std.fs.path.join(self.a(), &.{ self.root, entry });
+        const r = bundleReport(self.a(), io, full, &err, false, opts) catch |e| {
+            std.debug.print("\nbundle failed: {s}\n", .{err.message});
+            return e;
+        };
+        return r.code;
     }
     /// The error message of a bundle that MUST fail.
     fn refusal(self: *Sandbox, entry: []const u8) ![]const u8 {
@@ -1741,4 +1814,119 @@ test "export root: exported survives, non-exported twin dies (no over-marking)" 
     const code = try s.bundleOf("main.js");
     try std.testing.expect(indexOf(code, "function publique") != null);
     try std.testing.expect(indexOf(code, "privee") == null);
+}
+
+// ---- minify: cross-module name shortening ----
+
+test "minify: top-level bindings become short names" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("lib.js", "export const someVeryLongHelperName = () => 42;");
+    try s.write("main.js",
+        \\import { someVeryLongHelperName } from './lib.js';
+        \\console.log(someVeryLongHelperName());
+    );
+    const plain = try s.bundleOf("main.js");
+    const small = try s.codeWith("main.js", .{ .minify = true });
+    // The long name survives untouched without minify, and is gone with it.
+    try std.testing.expect(indexOf(plain, "someVeryLongHelperName") != null);
+    try std.testing.expect(indexOf(small, "someVeryLongHelperName") == null);
+    try std.testing.expect(small.len < plain.len);
+}
+
+test "minify: the entry's PUBLIC names survive (export { short as public })" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("main.js", "export const publicApiName = 1;");
+    const code = try s.codeWith("main.js", .{ .minify = true });
+    // The exported NAME is a contract: it must appear verbatim in `export { … }`,
+    // whatever the binding was renamed to internally.
+    try std.testing.expect(indexOf(code, "publicApiName") != null);
+    try std.testing.expect(indexOf(code, "as publicApiName") != null);
+}
+
+test "minify: a short name NEVER shadows a local (the correctness guard)" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    // `main` declares locals named `a`, `b`, `c` inside a function body. If a
+    // top-level binding were renamed to one of them, the call inside `f` would
+    // silently resolve to the local — the bug this guard exists for.
+    try s.write("lib.js", "export const helper = () => 1;");
+    try s.write("main.js",
+        \\import { helper } from './lib.js';
+        \\function f() { const a = 1; const b = 2; const c = 3; return a + b + c + helper(); }
+        \\console.log(f());
+    );
+    const code = try s.codeWith("main.js", .{ .minify = true });
+    // `helper` was renamed, but not to `a`, `b` or `c`.
+    try std.testing.expect(indexOf(code, "helper") == null);
+    for ([_][]const u8{ "const a = ", "const b = ", "const c = " }) |decl| {
+        try std.testing.expect(indexOf(code, decl) != null); // the locals are intact
+    }
+    // The renamed top-level declaration cannot be one of the shadowed spellings.
+    try std.testing.expect(indexOf(code, "\nconst a = () =>") == null);
+    try std.testing.expect(indexOf(code, "\nconst b = () =>") == null);
+    try std.testing.expect(indexOf(code, "\nconst c = () =>") == null);
+}
+
+test "minify: globals are still off limits" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("lib.js", "export const x1 = 1; export const x2 = 2; export const x3 = 3;");
+    try s.write("main.js",
+        \\import { x1, x2, x3 } from './lib.js';
+        \\console.log(x1 + x2 + x3, Math.max(1, 2));
+    );
+    const code = try s.codeWith("main.js", .{ .minify = true });
+    // `console` and `Math` are unresolved globals: reserved by `reserveNames`,
+    // so no binding can ever be renamed onto them.
+    try std.testing.expect(indexOf(code, "console.log") != null);
+    try std.testing.expect(indexOf(code, "Math.max") != null);
+    try std.testing.expect(indexOf(code, "const console = ") == null);
+    try std.testing.expect(indexOf(code, "const Math = ") == null);
+}
+
+test "minify: off by default (the readable bundle is the default)" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("main.js", "const readableName = 1; console.log(readableName);");
+    try std.testing.expect(indexOf(try s.codeWith("main.js", .{}), "readableName") != null);
+}
+
+// ---- the resolution knobs, end to end through the linker ----
+
+test "options.resolve: an alias reaches the bundle" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("src/dep.js", "export const value = 7;");
+    try s.write("main.js", "import { value } from '@/dep.js'; console.log(value);");
+    const target = try std.fs.path.join(s.a(), &.{ s.root, "src" });
+    const code = try s.codeWith("main.js", .{
+        .resolve = .{ .alias = &.{.{ .from = "@", .to = target }} },
+    });
+    // The aliased module was INLINED (not left as an external import).
+    try std.testing.expect(indexOf(code, "const value = 7") != null);
+    try std.testing.expect(indexOf(code, "from '@/dep.js'") == null);
+}
+
+test "options.resolve: without the alias, the same import stays external" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("src/dep.js", "export const value = 7;");
+    try s.write("main.js", "import { value } from '@/dep.js'; console.log(value);");
+    const code = try s.codeWith("main.js", .{});
+    // The contrast that proves the alias is what did the work.
+    try std.testing.expect(indexOf(code, "const value = 7") == null);
+    try std.testing.expect(indexOf(code, "'@/dep.js'") != null);
+}
+
+test "options.resolve: a custom extension table reaches the bundle" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("dep.mts", "export const v = 3;");
+    try s.write("main.js", "import { v } from './dep'; console.log(v);");
+    const code = try s.codeWith("main.js", .{
+        .resolve = .{ .extensions = &.{ ".mts", ".js" } },
+    });
+    try std.testing.expect(indexOf(code, "const v = 3") != null);
 }

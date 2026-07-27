@@ -475,7 +475,7 @@ test("live binding imported BY NAME: accepted (hoisting handles it)", () => {
 test("VERSION follows package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.1.1");
+  assert.equal(zbundle.VERSION, "0.2.0");
 });
 
 // ══════════════════ v0.3 : LE TREE-SHAKING ══════════════════
@@ -565,7 +565,7 @@ test("non-regression: the linking projects keep their behaviour", () => {
 test("VERSION matches package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.1.1");
+  assert.equal(zbundle.VERSION, "0.2.0");
 });
 
 // ══════════════════ LE CLI ══════════════════
@@ -698,4 +698,391 @@ test("CLI: two entries at once are refused", () => {
   const r = cli(["main.js", "autre.js"]);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /only one entry/);
+});
+
+// ══════════════════ THE CONFIG LAYER ══════════════════
+// `zbundle build` end to end: a config file on disk, the command, the files it
+// writes. These are the cases the playground judge cannot cover — it runs ONE
+// bundle per project, whereas the build layer is about several of them, about
+// where they land, and about what it refuses.
+
+/**
+ * A throwaway project: sources, a config, and a `node_modules/zbundle` symlink
+ * so `import { defineConfig } from "zbundle/config"` resolves exactly as it
+ * would for a real user.
+ */
+function tmpProject(files) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zb-cfg-"));
+  for (const [rel, content] of Object.entries(files)) {
+    const file = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  }
+  fs.mkdirSync(path.join(dir, "node_modules"), { recursive: true });
+  fs.symlinkSync(__dirname, path.join(dir, "node_modules", "zbundle"), "dir");
+  return dir;
+}
+
+/** Runs `zbundle build …` inside a throwaway project. */
+function build(dir, args = []) {
+  return cli(["build", ...args], dir);
+}
+
+const read = (dir, ...rel) => fs.readFileSync(path.join(dir, ...rel), "utf8");
+const exists = (dir, ...rel) => fs.existsSync(path.join(dir, ...rel));
+
+test("config: a .ts config is loaded, and defineConfig is typed identity", () => {
+  const dir = tmpProject({
+    "src/index.ts": `export const n: number = 41; console.log(n + 1);`,
+    "zbundle.config.ts": `import { defineConfig } from "zbundle/config";
+export default defineConfig({ input: "src/index.ts" });`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  // The default output.dir is `dist`, the default name `[name].js` -> index.js.
+  assert.ok(exists(dir, "dist", "index.js"), r.stderr);
+  assert.equal(execFileSync(process.execPath, [path.join(dir, "dist", "index.js")], { encoding: "utf8" }), "42\n");
+});
+
+test("config: the lookup order is .ts, .mts, .js, .mjs", () => {
+  const dir = tmpProject({
+    "a.js": `console.log("from ts");`,
+    "b.js": `console.log("from mjs");`,
+    "zbundle.config.mjs": `export default { input: "b.js" };`,
+    "zbundle.config.ts": `export default { input: "a.js" };`,
+  });
+  assert.equal(build(dir).status, 0);
+  // Both exist: the .ts must win.
+  assert.match(read(dir, "dist", "a.js"), /from ts/);
+  assert.ok(!exists(dir, "dist", "b.js"));
+});
+
+test("config: --config forces a file, and a missing one is an error", () => {
+  const dir = tmpProject({
+    "x.js": `console.log("x");`,
+    "custom/build.mjs": `export default { input: "../x.js", output: { dir: "../out" } };`,
+  });
+  assert.equal(build(dir, ["--config", "custom/build.mjs"]).status, 0);
+  assert.ok(exists(dir, "out", "x.js"));
+
+  const missing = build(dir, ["--config", "nope.ts"]);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /config file not found: nope\.ts/);
+});
+
+test("config: an object input creates the subdirectories from its KEYS", () => {
+  const dir = tmpProject({
+    "src/main.ts": `console.log("main");`,
+    "src/cli.ts": `console.log("cli");`,
+    "zbundle.config.ts": `export default {
+      input: { main: "src/main.ts", "cli/index": "src/cli.ts" },
+    };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(exists(dir, "dist", "main.js"));
+  // THE point of the object form: a key with a slash nests the output.
+  assert.ok(exists(dir, "dist", "cli", "index.js"), "dist/cli/index.js missing");
+});
+
+test("config: multi-input produces N INDEPENDENT and correct bundles", () => {
+  const dir = tmpProject({
+    "shared.js": `export const tag = () => "shared";`,
+    "a.js": `import { tag } from './shared.js'; console.log("a:", tag());`,
+    "b.js": `import { tag } from './shared.js'; console.log("b:", tag());`,
+    "zbundle.config.ts": `export default { input: ["a.js", "b.js"] };`,
+  });
+  assert.equal(build(dir).status, 0);
+  const run = (f) => execFileSync(process.execPath, [path.join(dir, "dist", f)], { encoding: "utf8" });
+  assert.equal(run("a.js"), "a: shared\n");
+  assert.equal(run("b.js"), "b: shared\n");
+  // Independent means each carries its own copy of the shared module: factoring
+  // it out would be a shared chunk, i.e. code splitting, which is not v1.
+  assert.match(read(dir, "dist", "a.js"), /shared/);
+  assert.match(read(dir, "dist", "b.js"), /shared/);
+});
+
+test("config: output.entryFileNames renames, [name] is the entry's name", () => {
+  const dir = tmpProject({
+    "src/index.js": `console.log("hi");`,
+    "zbundle.config.ts": `export default {
+      input: "src/index.js",
+      output: { dir: "build", entryFileNames: "[name].bundle.mjs" },
+    };`,
+  });
+  assert.equal(build(dir).status, 0);
+  assert.ok(exists(dir, "build", "index.bundle.mjs"));
+});
+
+test("config: clean empties the directory BEFORE emitting", () => {
+  const dir = tmpProject({
+    "m.js": `console.log("m");`,
+    "zbundle.config.ts": `export default { input: "m.js", output: { clean: true } };`,
+  });
+  fs.mkdirSync(path.join(dir, "dist"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "dist", "stale.js"), "// from a previous build");
+  assert.equal(build(dir).status, 0);
+  assert.ok(!exists(dir, "dist", "stale.js"), "the stale file survived clean");
+  assert.ok(exists(dir, "dist", "m.js"));
+});
+
+test("config: clean REFUSES to empty the working directory", () => {
+  const dir = tmpProject({
+    "m.js": `console.log("m");`,
+    "zbundle.config.ts": `export default { input: "m.js", output: { dir: ".", clean: true } };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /refusing to empty/);
+  assert.match(r.stderr, /current directory/);
+  // Nothing was deleted: the guard fires BEFORE any removal.
+  assert.ok(exists(dir, "m.js"));
+});
+
+test("config: clean REFUSES a directory containing the cwd", () => {
+  const dir = tmpProject({
+    "sub/m.js": `console.log("m");`,
+    "sub/zbundle.config.ts": `export default { input: "m.js", output: { dir: "..", clean: true } };`,
+  });
+  const r = cli(["build"], path.join(dir, "sub"));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /refusing to empty/);
+  assert.ok(exists(dir, "sub", "m.js"));
+});
+
+test("config: resolve.alias resolves against the CONFIG's directory, not the cwd", () => {
+  const dir = tmpProject({
+    "proj/src/dep.js": `export const v = 7;`,
+    "proj/src/main.js": `import { v } from '@/dep.js'; console.log(v);`,
+    "proj/zbundle.config.mjs": `export default {
+      input: "src/main.js",
+      resolve: { alias: { "@": "./src" } },
+    };`,
+    "elsewhere/.keep": ``,
+  });
+  // Run from a DIFFERENT directory: if the alias were resolved against the cwd
+  // it would point at elsewhere/src and the build would fail.
+  const r = cli(["build", "--config", "../proj/zbundle.config.mjs"], path.join(dir, "elsewhere"));
+  assert.equal(r.status, 0, r.stderr);
+  const code = read(dir, "proj", "dist", "main.js");
+  assert.match(code, /const v = 7/); // inlined, not left as an external import
+  assert.doesNotMatch(code, /'@\/dep\.js'/);
+});
+
+test("config: an alias key keeps its trailing separator", () => {
+  const dir = tmpProject({
+    "src/x.js": `export const x = 1;`,
+    "main.js": `import { x } from '~/x.js'; console.log(x);`,
+    "zbundle.config.ts": `export default {
+      input: "main.js",
+      resolve: { alias: { "~/": "./src/" } },
+    };`,
+  });
+  // `path.resolve` strips a trailing slash; if that leaked through, `~/x.js`
+  // would expand to `srcx.js` and nothing would resolve.
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(read(dir, "dist", "main.js"), /const x = 1/);
+});
+
+test("config: an aliased specifier that is missing FAILS (never a silent external)", () => {
+  const dir = tmpProject({
+    "main.js": `import { x } from '@/nope.js'; console.log(x);`,
+    "zbundle.config.ts": `export default {
+      input: "main.js",
+      resolve: { alias: { "@": "./src" } },
+    };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /cannot resolve '@\/nope\.js'/);
+});
+
+test("config: resolve.extensions changes the try order", () => {
+  const dir = tmpProject({
+    "dep.ts": `export const which = "ts";`,
+    "dep.js": `export const which = "js";`,
+    "main.js": `import { which } from './dep'; console.log(which);`,
+    "zbundle.config.ts": `export default {
+      input: "main.js",
+      resolve: { extensions: [".js", ".ts"] },
+    };`,
+  });
+  assert.equal(build(dir).status, 0);
+  // Reversed table: `.js` must now win over the default `.ts`-first order.
+  assert.match(read(dir, "dist", "main.js"), /"js"/);
+});
+
+test("config: mode production turns minify on, and it is minify's ONLY effect", () => {
+  const files = (mode) => ({
+    "lib.js": `export const aVeryLongExportedName = () => 1;`,
+    "main.js": `import { aVeryLongExportedName } from './lib.js'; console.log(aVeryLongExportedName());`,
+    "zbundle.config.ts": `export default { mode: ${JSON.stringify(mode)}, input: "main.js" };`,
+  });
+  const dev = tmpProject(files("development"));
+  const prod = tmpProject(files("production"));
+  assert.equal(build(dev).status, 0);
+  assert.equal(build(prod).status, 0);
+  assert.match(read(dev, "dist", "main.js"), /aVeryLongExportedName/);
+  assert.doesNotMatch(read(prod, "dist", "main.js"), /aVeryLongExportedName/);
+  // Both still RUN and say the same thing: minify renames, it does not rewrite.
+  const run = (d) => execFileSync(process.execPath, [path.join(d, "dist", "main.js")], { encoding: "utf8" });
+  assert.equal(run(dev), run(prod));
+});
+
+test("config: the CLI wins over the config, which wins over the defaults", () => {
+  const dir = tmpProject({
+    "lib.js": `export const longNameHere = () => 1;`,
+    "main.js": `import { longNameHere } from './lib.js'; console.log(longNameHere());`,
+    "zbundle.config.ts": `export default {
+      mode: "development",
+      input: "main.js",
+      output: { dir: "fromConfig" },
+    };`,
+  });
+  // config beats the default (`dist`)
+  assert.equal(build(dir).status, 0);
+  assert.ok(exists(dir, "fromConfig", "main.js"));
+  assert.match(read(dir, "fromConfig", "main.js"), /longNameHere/); // development
+
+  // CLI beats the config, on both axes
+  assert.equal(build(dir, ["--out-dir", "fromCli", "--minify"]).status, 0);
+  assert.ok(exists(dir, "fromCli", "main.js"));
+  assert.doesNotMatch(read(dir, "fromCli", "main.js"), /longNameHere/);
+});
+
+test("config: `build <entry>` bypasses the config entirely", () => {
+  const dir = tmpProject({
+    "other.js": `console.log("other");`,
+    "direct.js": `console.log("direct");`,
+    "zbundle.config.ts": `export default { input: "other.js", output: { dir: "never" } };`,
+  });
+  const r = build(dir, ["direct.js"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(exists(dir, "dist", "direct.js"));
+  assert.ok(!exists(dir, "never"), "the config was read even though an entry was given");
+
+  // Combining the two would make the precedence ambiguous, so it is refused.
+  const both = build(dir, ["direct.js", "--config", "zbundle.config.ts"]);
+  assert.equal(both.status, 1);
+  assert.match(both.stderr, /cannot be combined/);
+});
+
+test("config: no config file at all is a clear error, with the names tried", () => {
+  const dir = tmpProject({ "m.js": `console.log(1);` });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /no config file found/);
+  assert.match(r.stderr, /zbundle\.config\.ts/);
+  assert.match(r.stderr, /zbundle build src\/index\.ts/); // the way out
+});
+
+// ---- the RESERVED options: each one errors, and names its version ----
+
+const RESERVED_CASES = [
+  ["sourcemap", `{ input: "m.js", sourcemap: true }`, /sourcemap: reserved — planned for v0\.3/],
+  ["watch", `{ input: "m.js", watch: true }`, /watch: reserved — planned for v0\.4/],
+  ["output.chunkFileNames", `{ input: "m.js", output: { chunkFileNames: "[name].js" } }`, /chunkFileNames: reserved — planned for v0\.5/],
+  ["output.assetFileNames", `{ input: "m.js", output: { assetFileNames: "[name][ext]" } }`, /assetFileNames: reserved — planned for v0\.5/],
+];
+
+for (const [name, body, expected] of RESERVED_CASES) {
+  test(`config: ${name} is RESERVED — an error, never a silent no-op`, () => {
+    const dir = tmpProject({ "m.js": `console.log(1);`, "zbundle.config.ts": `export default ${body};` });
+    const r = build(dir);
+    assert.equal(r.status, 1, `expected exit 1, got ${r.status}`);
+    assert.match(r.stderr, expected);
+    assert.match(r.stderr, /issues/); // where to follow it
+    assert.ok(!exists(dir, "dist"), "something was emitted despite the refusal");
+  });
+}
+
+test("config: sourcemap/watch set to FALSE are accepted (that is the behaviour)", () => {
+  const dir = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default { input: "m.js", sourcemap: false, watch: false };`,
+  });
+  assert.equal(build(dir).status, 0);
+});
+
+test("config: a format other than esm is refused, and says where iife lives", () => {
+  const dir = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default { input: "m.js", output: { format: "cjs" } };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /output\.format: "cjs"/);
+  assert.match(r.stderr, /only "esm" is supported/);
+  assert.match(r.stderr, /-f iife/); // the escape hatch that DOES exist
+});
+
+test("config: an unknown placeholder in entryFileNames is refused", () => {
+  const dir = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default { input: "m.js", output: { entryFileNames: "[name].[hash].js" } };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /unknown placeholder \[hash\]/);
+});
+
+// ---- unknown keys: a WARNING with a suggestion, and the build goes on ----
+
+test("config: an unknown key warns with the closest name, and still builds", () => {
+  const dir = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default { input: "m.js", minfy: true, outpout: {} };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /unknown option minfy — did you mean minify\?/);
+  assert.match(r.stderr, /unknown option outpout — did you mean output\?/);
+  assert.ok(exists(dir, "dist", "m.js"), "a typo must not stop the build");
+});
+
+test("config: a nested unknown key is reported with its full path", () => {
+  const dir = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default { input: "m.js", resolve: { aliass: {} } };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /unknown option resolve\.aliass — did you mean resolve\.alias\?/);
+});
+
+// ---- wrong values: an error naming the path and both types ----
+
+const TYPE_CASES = [
+  [`{ input: 42 }`, /input: expected string \| string\[\] \| Record/],
+  [`{ input: "m.js", minify: "yes" }`, /minify: expected boolean, received string/],
+  [`{ input: "m.js", mode: "prod" }`, /mode: expected "development" \| "production"/],
+  [`{ input: "m.js", output: { dir: 3 } }`, /output\.dir: expected string, received number/],
+  [`{ input: "m.js", resolve: { extensions: "ts" } }`, /resolve\.extensions: expected array of strings/],
+  [`{ input: "m.js", resolve: { extensions: ["ts"] } }`, /must start with a dot/],
+  [`{ input: "m.js", resolve: { extensions: [] } }`, /cannot be empty/],
+];
+
+for (const [body, expected] of TYPE_CASES) {
+  test(`config: wrong value refused — ${body.slice(0, 46)}`, () => {
+    const dir = tmpProject({ "m.js": `console.log(1);`, "zbundle.config.ts": `export default ${body};` });
+    const r = build(dir);
+    assert.equal(r.status, 1, `expected exit 1, got ${r.status}: ${r.stderr}`);
+    assert.match(r.stderr, expected);
+  });
+}
+
+test("config: a config exporting something that is not an object is refused", () => {
+  const dir = tmpProject({ "m.js": `console.log(1);`, "zbundle.config.ts": `export default 42;` });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /must export an object, received number/);
+});
+
+test("config: a missing entry file names the path", () => {
+  const dir = tmpProject({ "zbundle.config.ts": `export default { input: "src/gone.ts" };` });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /entry not found/);
+  assert.match(r.stderr, /gone\.ts/);
 });

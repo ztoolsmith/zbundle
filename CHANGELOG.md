@@ -4,6 +4,62 @@ All notable changes to zbundle. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/).
 
+## [0.2.0] — 2026-07-27
+
+**The TypeScript layer**: a config file, a typed `defineConfig`, and a real
+`zbundle build`. The rule this layer serves, for the whole package: what is
+decided *per module* belongs to Zig, what is decided *per build* belongs to
+TypeScript — and this layer ORCHESTRATES, it never computes.
+
+### Added
+
+- **`zbundle/config`** — the public, typed surface: `Config`, `OutputOptions`,
+  `ResolveOptions`, and `defineConfig`, the typed identity function.
+- **`zbundle build`** — reads `zbundle.config.{ts,mts,js,mjs}` (that lookup order
+  is a contract), emits one bundle per entry, writes them under `output.dir`.
+  `zbundle build <entry>` bypasses the config entirely. The one-shot form
+  (`zbundle <entry>`) is untouched: it is what makes the tool work in a pipe.
+- **`resolve.alias`** — exact PREFIX substitution (`'@/' -> './src/'`), applied
+  **before** the external test, because `@` and `~` look bare and would otherwise
+  never reach the disk. An aliased specifier that does not exist is an ERROR, not
+  a silent external. Relative targets resolve against the CONFIG FILE's
+  directory, never the cwd.
+- **`resolve.extensions`** — the try order becomes configurable; the default is
+  the historical table.
+- **`minify`** (default: `mode === 'production'`) — shortens cross-module names,
+  with the guarantee that a short name never shadows a local or captures a
+  global. It is NOT a full minifier: the printer still emits indented, readable
+  JS. Compact output needs a compact mode in zcompiler's printer.
+- **`output.clean`** — empties the directory first, and refuses to empty the
+  working directory or any ancestor of it.
+- Multi-input: `string[]` or `Record<name, file>`; a key containing `/`
+  (`'cli/index'`) nests the output. The bundles are INDEPENDENT — sharing a
+  module means duplicating it, because factoring it out is code splitting.
+
+### Changed
+
+- The Zig resolver takes a `Config { extensions, alias }`, threaded through
+  `graph.build` and `linker.Options`. The defaults ARE the previous behaviour, so
+  nothing existing changed meaning.
+- `bundleWith` accepts `{ minify, resolve }` — a single crossing, at the start of
+  the build. By then the TypeScript layer has validated everything and made the
+  alias targets absolute.
+
+### The refusals (an option that is accepted must ACT)
+
+`sourcemap: true` (v0.3), `watch: true` (v0.4), `output.chunkFileNames` and
+`output.assetFileNames` (v0.5), any `output.format` other than `esm`, and unknown
+`entryFileNames` placeholders are errors naming the version they are planned for.
+`sourcemap: false` and `watch: false` are accepted — they describe what zbundle
+already does. An unknown key is only a warning, with the closest key suggested.
+
+### Verified
+
+84 Zig tests, 101 Node tests, 21/21 in the playground judge — four of those
+projects built **through the command**, config file included, so the whole chain
+(config -> CLI -> binding -> bundle -> execution -> identical stdout -> importing
+witness) is exercised on every run.
+
 ## [0.1.1] — 2026-07-26
 
 A **documentation** release. No code changes: the bundler is byte for byte the

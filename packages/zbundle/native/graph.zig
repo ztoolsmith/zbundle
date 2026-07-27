@@ -119,10 +119,14 @@ pub const Built = struct { graph: Graph, parsed: []const Parsed };
 /// A relative specifier that does not resolve FAILS the build (`err.message`
 /// holds the attempted paths). A bare specifier never fails: it becomes an
 /// external.
-pub fn build(a: Allocator, io: Io, entry: []const u8, err: *BuildError) Error!Built {
+///
+/// `cfg` is what the build layer is allowed to change about resolution (the
+/// extension table, the aliases). `.{}` = the historical behaviour, so every
+/// existing caller and test keeps its exact meaning.
+pub fn build(a: Allocator, io: Io, entry: []const u8, cfg: resolver.Config, err: *BuildError) Error!Built {
     const t0 = Io.Clock.awake.now(io).nanoseconds;
 
-    var b = Builder{ .a = a, .io = io, .err = err };
+    var b = Builder{ .a = a, .io = io, .cfg = cfg, .err = err };
     // The entry is made ABSOLUTE first: `std.fs.path.resolve` is purely lexical
     // in Zig 0.16 (it does not know the cwd), so without this a relative entry
     // would stay relative in error messages.
@@ -171,6 +175,8 @@ fn absolute(a: Allocator, io: Io, path: []const u8) Allocator.Error![]const u8 {
 const Builder = struct {
     a: Allocator,
     io: Io,
+    /// The resolution knobs, carried down to every `resolver.resolve` call.
+    cfg: resolver.Config,
     err: *BuildError,
     modules: std.ArrayList(Module) = .empty,
     /// Parallel to `modules`: each one's normalized AST, kept for the linker.
@@ -187,7 +193,7 @@ const Builder = struct {
     /// it if new). `error.BuildFailed` if a relative specifier does not resolve.
     fn resolveAndIntern(self: *Builder, from_dir: []const u8, specifier: []const u8, importer: []const u8) Error!ModuleId {
         var diag: resolver.Diagnostic = .{};
-        const r = resolver.resolve(self.a, self.io, from_dir, specifier, &diag) catch |e| switch (e) {
+        const r = resolver.resolve(self.a, self.io, from_dir, specifier, self.cfg, &diag) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             error.NotFound => {
                 self.err.message = try resolver.formatError(self.a, diag, importer);
@@ -274,7 +280,7 @@ const Builder = struct {
             .name = rec.name,
             .attributes = @ptrCast(rec.attributes),
         };
-        if (resolver.isBare(rec.specifier)) {
+        if (resolver.isExternal(self.cfg, rec.specifier)) {
             edge.external = try self.internExternal(rec.specifier);
         } else {
             edge.to = try self.resolveAndIntern(dir, rec.specifier, importer);
@@ -568,9 +574,13 @@ const Sandbox = struct {
         try self.tmp.dir.writeFile(io, .{ .sub_path = sub_path, .data = contents });
     }
     fn graph(self: *Sandbox, entry: []const u8) !Graph {
+        return self.graphCfg(entry, .{});
+    }
+    /// Same, with explicit resolution knobs (aliases, custom table).
+    fn graphCfg(self: *Sandbox, entry: []const u8, cfg: resolver.Config) !Graph {
         var err: BuildError = .{};
         const full = try std.fs.path.join(self.a(), &.{ self.root, entry });
-        const built = build(self.a(), io, full, &err) catch |e| {
+        const built = build(self.a(), io, full, cfg, &err) catch |e| {
             std.debug.print("build failed: {s}\n", .{err.message});
             return e;
         };
@@ -707,7 +717,7 @@ test "relative not found: error with the attempted paths" {
     try s.write("a.js", "import './missing';");
     var err: BuildError = .{};
     const full = try std.fs.path.join(s.a(), &.{ s.root, "a.js" });
-    try std.testing.expectError(error.BuildFailed, build(s.a(), Sandbox.io, full, &err));
+    try std.testing.expectError(error.BuildFailed, build(s.a(), Sandbox.io, full, .{}, &err));
     try std.testing.expect(std.mem.indexOf(u8, err.message, "cannot resolve './missing'") != null);
     try std.testing.expect(std.mem.indexOf(u8, err.message, "a.js") != null); // the importer
     try std.testing.expect(std.mem.indexOf(u8, err.message, "missing.ts") != null); // the attempts

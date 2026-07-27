@@ -1,6 +1,6 @@
 {
   "name": "zbundle",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "A JavaScript/TypeScript bundler written in Zig, built on zcompiler — scope hoisting, tree-shaking, single file",
   "keywords": [
     "bundler",
@@ -44,5 +44,15 @@
   "license": "MIT",
   "bin": {
     "zbundle": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "default": "./dist/config.js"
+    }
   }
 }

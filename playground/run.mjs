@@ -32,6 +32,21 @@ import zcompiler from "zcompiler";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PROJECTS = path.join(HERE, "projects");
 const REFUSALS = path.join(HERE, "refusals");
+const CLI = path.join(HERE, "..", "packages", "zbundle", "dist", "cli.js");
+
+/**
+ * A project carrying a `zbundle.config.*` is judged through the COMMAND, not the
+ * API: config file -> CLI -> binding -> bundle -> execution. That is the only
+ * way the config layer is exercised end to end; calling `bundleStats()` would
+ * skip everything this chantier added.
+ *
+ * The convention for such a project: ONE entry, `output.dir: "dist"`. The
+ * harness then knows where to pick the artifact up.
+ */
+const CONFIG_NAMES = ["zbundle.config.ts", "zbundle.config.mts", "zbundle.config.js", "zbundle.config.mjs"];
+function configOf(dir) {
+  return CONFIG_NAMES.map((n) => path.join(dir, n)).find((f) => fs.existsSync(f)) ?? null;
+}
 
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
@@ -63,7 +78,10 @@ function run(file, cwd) {
 function sources(dir) {
   const out = [];
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+    // `dist` holds what the CLI just produced, and `zbundle.config.*` is build
+    // configuration, not project source. Neither belongs in the reference mirror.
+    if (e.name === "node_modules" || e.name === "dist" || e.name.startsWith(".")) continue;
+    if (CONFIG_NAMES.includes(e.name)) continue;
     const p = path.join(dir, e.name);
     if (e.isDirectory()) out.push(...sources(p));
     else if (/\.(m?js|jsx|tsx|ts)$/.test(e.name)) out.push(p);
@@ -116,15 +134,36 @@ function checkProject(dir) {
     return record(name, "THE ORIGINAL does not run", (err.stderr || err.message).trim());
   }
 
-  // 2. the bundle
+  // 2. the bundle — through the CLI when the project has a config, otherwise
+  //    straight through the API.
+  const configFile = configOf(dir);
   let code;
-  let stats;
-  try {
-    const r = zbundle.bundleStats(entry);
-    code = r.code;
-    stats = r.stats;
-  } catch (err) {
-    return record(name, "bundle() failed", err.message);
+  let stats = null;
+  if (configFile) {
+    const dist = path.join(dir, "dist");
+    fs.rmSync(dist, { recursive: true, force: true });
+    try {
+      execFileSync(process.execPath, [CLI, "build", "--quiet"], {
+        cwd: dir,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      return record(name, "the CLI build FAILED", (err.stderr || err.message).trim());
+    }
+    const produced = fs.existsSync(dist) ? fs.readdirSync(dist).filter((f) => f.endsWith(".js")) : [];
+    if (produced.length !== 1) {
+      return record(name, `expected exactly 1 bundle in dist/, found ${produced.length}`, produced.join(", "));
+    }
+    code = fs.readFileSync(path.join(dist, produced[0]), "utf8");
+  } else {
+    try {
+      const r = zbundle.bundleStats(entry);
+      code = r.code;
+      stats = r.stats;
+    } catch (err) {
+      return record(name, "bundle() failed", err.message);
+    }
   }
 
   // Written INSIDE the project: externals (`react/jsx-runtime`, …) must resolve
@@ -163,6 +202,16 @@ function checkProject(dir) {
   if (!keep) fs.rmSync(bundleFile, { force: true });
   fs.rmSync(path.join(dir, ".reference"), { recursive: true, force: true });
   pass++;
+  if (stats === null) {
+    // Built through the command: the CLI keeps its numbers on stderr, so we
+    // report what we can see from here — and SAY it came through the CLI.
+    console.log(
+      `  ${GREEN}✔${OFF} ${name.padEnd(16)} ${DIM}via CLI${OFF}  ` +
+        `${String(code.length).padStart(5)} B  ${DIM}${path.basename(configFile)}${OFF}`,
+    );
+    if (!keep) fs.rmSync(path.join(dir, "dist"), { recursive: true, force: true });
+    return;
+  }
   const pct = ((100 * stats.output_bytes) / stats.input_bytes).toFixed(0);
   const shaken =
     stats.statements_dropped > 0 || stats.modules_dropped > 0
@@ -293,7 +342,7 @@ function checkHealth(code, stats) {
   if (leaked.length) {
     return { what: "INTERNAL names are leaking", detail: leaked.join(", ") };
   }
-  if (stats.modules < 1) return { what: "empty bundle" };
+  if (stats !== null && stats.modules < 1) return { what: "empty bundle" };
   return null;
 }
 
