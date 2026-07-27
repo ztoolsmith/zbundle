@@ -144,9 +144,16 @@ export function validate(
   configDir: string,
 ): { config: ResolvedConfig; warnings: string[] } {
   if (!isPlainObject(raw)) {
+    const hint =
+      typeName(raw) === "array"
+        ? `\n  For several bundles, use one config with several inputs:\n` +
+          `    input: { app: "src/app.ts", cli: "src/cli.ts" }`
+        : typeName(raw) === "function"
+          ? `\n  A function config is not supported: call defineConfig with the object itself.`
+          : "";
     throw new ConfigError(
       `the config must export an object, received ${typeName(raw)}\n` +
-        `  expected: export default defineConfig({ input: "src/index.ts" })`,
+        `  expected: export default defineConfig({ input: "src/index.ts" })${hint}`,
     );
   }
   const warnings: string[] = [];
@@ -179,6 +186,15 @@ export function validate(
     const o = c.output as Record<string, unknown>;
     if (o.dir !== undefined) {
       if (typeof o.dir !== "string") wrongType("output.dir", o.dir, "string");
+      // An empty string resolves to the config's own directory, which would make
+      // the bundle land ON TOP of the sources. `"."` says that explicitly if it
+      // is really what someone wants.
+      if (o.dir === "") {
+        throw new ConfigError(
+          `output.dir: cannot be empty — it would resolve to the config's own directory\n` +
+            `  and write the bundles next to (or over) your sources. Use "." if you mean it.`,
+        );
+      }
       outDir = isAbsolute(o.dir) ? o.dir : resolvePath(configDir, o.dir);
     }
     if (o.format !== undefined && o.format !== "esm") {
@@ -191,6 +207,15 @@ export function validate(
     if (o.entryFileNames !== undefined) {
       if (typeof o.entryFileNames !== "string") {
         wrongType("output.entryFileNames", o.entryFileNames, "string");
+      }
+      if (o.entryFileNames === "") {
+        throw new ConfigError(`output.entryFileNames: cannot be empty — every bundle needs a file name`);
+      }
+      if (isAbsolute(o.entryFileNames)) {
+        throw new ConfigError(
+          `output.entryFileNames: ${JSON.stringify(o.entryFileNames)} is absolute — it is a name\n` +
+            `  RELATIVE to output.dir, not a path. Set output.dir instead.`,
+        );
       }
       checkPlaceholders(o.entryFileNames);
       entryFileNames = o.entryFileNames;
@@ -272,10 +297,21 @@ function checkPlaceholders(pattern: string): void {
 
 /** The three input shapes, normalized to one list of named entries. */
 function readInput(input: unknown, configDir: string): ResolvedEntry[] {
-  const one = (file: string, name?: string): ResolvedEntry => ({
-    name: name ?? basename(file, extname(file)),
-    file: isAbsolute(file) ? file : resolvePath(configDir, file),
-  });
+  const one = (file: string, name?: string): ResolvedEntry => {
+    if (file === "") {
+      throw new ConfigError(
+        `input: an entry path cannot be empty${name !== undefined ? ` (key ${JSON.stringify(name)})` : ""}`,
+      );
+    }
+    const resolved = name ?? basename(file, extname(file));
+    if (resolved === "") {
+      throw new ConfigError(
+        `input: an entry name cannot be empty — it would produce a file with no name.\n` +
+          `  Name it with the object form: input: { app: ${JSON.stringify(file)} }`,
+      );
+    }
+    return { name: resolved, file: isAbsolute(file) ? file : resolvePath(configDir, file) };
+  };
   if (typeof input === "string") return [one(input)];
   if (Array.isArray(input)) {
     input.forEach((v, i) => {

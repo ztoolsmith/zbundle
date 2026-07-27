@@ -475,7 +475,7 @@ test("live binding imported BY NAME: accepted (hoisting handles it)", () => {
 test("VERSION follows package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.2.1");
+  assert.equal(zbundle.VERSION, "0.2.2");
 });
 
 // ══════════════════ v0.3 : LE TREE-SHAKING ══════════════════
@@ -565,7 +565,7 @@ test("non-regression: the linking projects keep their behaviour", () => {
 test("VERSION matches package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.2.1");
+  assert.equal(zbundle.VERSION, "0.2.2");
 });
 
 // ══════════════════ LE CLI ══════════════════
@@ -829,7 +829,12 @@ test("config: clean empties the directory BEFORE emitting", () => {
 test("config: clean REFUSES to empty the working directory", () => {
   const dir = tmpProject({
     "m.js": `console.log("m");`,
-    "zbundle.config.ts": `export default { input: "m.js", output: { dir: ".", clean: true } };`,
+    // `entryFileNames` keeps the output off the source file, so this reaches the
+    // CLEAN guard rather than the earlier "never overwrite a source" one.
+    "zbundle.config.ts": `export default {
+      input: "m.js",
+      output: { dir: ".", clean: true, entryFileNames: "[name].bundle.js" },
+    };`,
   });
   const r = build(dir);
   assert.equal(r.status, 1);
@@ -1191,4 +1196,131 @@ export default defineConfig({ input: "m.js" });`,
   assert.equal(forced.status, 1);
   assert.match(forced.stderr, /A \.cts config cannot work/);
   assert.match(forced.stderr, /zbundle\.config\.cjs with JSDoc types/);
+});
+
+// ---- nothing escapes output.dir, and no source is ever overwritten ----
+
+test("config: an input KEY cannot escape output.dir", () => {
+  const dir = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default { input: { "../escape": "m.js" } };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /is outside output\.dir/);
+  assert.ok(!exists(dir, "escape.js"), "a file was written outside output.dir");
+});
+
+test("config: entryFileNames cannot escape output.dir either", () => {
+  const dir = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default { input: "m.js", output: { entryFileNames: "../escape.js" } };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /is outside output\.dir/);
+  assert.ok(!exists(dir, "escape.js"));
+});
+
+test("config: a name MAY create subdirectories — it just may not leave", () => {
+  const dir = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default { input: { "cli/deep/index": "m.js" } };`,
+  });
+  assert.equal(build(dir).status, 0);
+  assert.ok(exists(dir, "dist", "cli", "deep", "index.js"));
+});
+
+test("config: an absolute entryFileNames is refused (it is a name, not a path)", () => {
+  const dir = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default { input: "m.js", output: { entryFileNames: "/tmp/x.js" } };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /is absolute/);
+});
+
+test("config: a bundle is NEVER written over a source file", () => {
+  const dir = tmpProject({
+    "m.js": `console.log("the original source");`,
+    // `output.dir: "."` + the default `[name].js` targets m.js itself.
+    "zbundle.config.ts": `export default { input: "m.js", output: { dir: "." } };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /written over a source file/);
+  // There is no undo for this one: the source must be untouched.
+  assert.match(read(dir, "m.js"), /the original source/);
+});
+
+test("config: output.dir cannot be empty (it used to overwrite the sources)", () => {
+  const dir = tmpProject({
+    "m.js": `console.log("the original source");`,
+    "zbundle.config.ts": `export default { input: "m.js", output: { dir: "" } };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /output\.dir: cannot be empty/);
+  assert.match(read(dir, "m.js"), /the original source/);
+});
+
+test("config: empty names are refused rather than producing nameless files", () => {
+  const empty = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default { input: "m.js", output: { entryFileNames: "" } };`,
+  });
+  assert.match(build(empty).stderr, /entryFileNames: cannot be empty/);
+
+  const key = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default { input: { "": "m.js" } };`,
+  });
+  assert.match(build(key).stderr, /entry name cannot be empty/);
+
+  const path_ = tmpProject({ "zbundle.config.ts": `export default { input: "" };` });
+  assert.match(build(path_).stderr, /entry path cannot be empty/);
+});
+
+test("config: output.dir pointing at a FILE says so, instead of a raw EEXIST", () => {
+  const dir = tmpProject({
+    "m.js": `console.log(1);`,
+    "taken": `not a directory`,
+    "zbundle.config.ts": `export default { input: "m.js", output: { dir: "taken" } };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /exists and is not a directory/);
+  assert.doesNotMatch(r.stderr, /EEXIST/);
+});
+
+test("config: an array config points at multi-input; a function config says so", () => {
+  const arr = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default [{ input: "m.js" }];`,
+  });
+  const a = build(arr);
+  assert.equal(a.status, 1);
+  assert.match(a.stderr, /received array/);
+  assert.match(a.stderr, /several inputs/);
+
+  const fn = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default () => ({ input: "m.js" });`,
+  });
+  const f = build(fn);
+  assert.equal(f.status, 1);
+  assert.match(f.stderr, /function config is not supported/);
+});
+
+test("config: a config exporting a Promise is awaited", () => {
+  const dir = tmpProject({
+    "m.js": `console.log("async");`,
+    // Not a documented feature, but it falls out of `await` flattening and a
+    // config that computes something asynchronously is a reasonable thing to
+    // write. Pinned so it cannot regress silently.
+    "zbundle.config.ts": `export default Promise.resolve({ input: "m.js" });`,
+  });
+  assert.equal(build(dir).status, 0);
+  assert.ok(exists(dir, "dist", "m.js"));
 });

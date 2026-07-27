@@ -4,6 +4,54 @@ All notable changes to zbundle. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/).
 
+## [0.2.2] — 2026-07-27
+
+Everything a config file can say, walked one key at a time — including the paths
+it can name. Six ways to write outside the declared output, or over your own
+sources, are now refused.
+
+### Fixed
+
+- **Nothing escapes `output.dir` any more.** A `..` in an input KEY
+  (`input: { "../escape": "m.js" }`) or in `output.entryFileNames`
+  (`"../escape.js"`) wrote the bundle *outside* the directory the config
+  declared, silently. `output.dir` is the contract: everything the build produces
+  lives under it. A name may still create subdirectories (`"cli/deep/index"`); it
+  may just never leave.
+
+- **A bundle is never written over a source file.** `output.dir: ""` resolved to
+  the config's own directory, so `input: "m.js"` with the default
+  `[name].js` replaced `m.js` with its own bundle — and there is no undo for
+  that. Empty `output.dir` is now refused outright, and any output path that
+  lands on one of the build's own inputs is refused too, whatever produced it.
+
+- **Empty names are refused** instead of producing nonsense: `output.dir: ""`,
+  `output.entryFileNames: ""` (which wrote a file named after the directory), an
+  empty input key (which produced `dist/.js`), and an empty input path (whose
+  error message pointed at the wrong thing).
+
+- **An absolute `output.entryFileNames`** (`"/tmp/x.js"`) was silently treated as
+  relative to `output.dir`. It is a name, not a path, and now says so.
+
+- **`output.dir` pointing at an existing FILE** surfaced a raw
+  `EEXIST: file already exists, mkdir …`. It now names the file and what to do.
+
+### Changed
+
+- An **array** config now points at multi-input (`input: { app: …, cli: … }`)
+  rather than just reporting the wrong type, and a **function** config says
+  plainly that it is not supported. Both were already refused; neither said what
+  to do instead.
+
+### Verified
+
+`defineConfig` was type-checked against a real `tsc` run: a valid config compiles
+clean, and a wrong value, a value outside a union, a forbidden `output.format`, an
+unknown key and a missing `input` are all caught at edit time — TypeScript even
+suggests `minify` for `minfy` on its own.
+
+118 Node tests (+10), 84 Zig tests, 21/21 in the playground judge.
+
 ## [0.2.1] — 2026-07-27
 
 ### Fixed

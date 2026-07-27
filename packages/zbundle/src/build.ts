@@ -5,7 +5,7 @@
 //! that is the addon's job, and this file calls it once per entry.
 
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 
 import { bundleWith } from "../index.js";
@@ -84,6 +84,32 @@ function planOutputs(cfg: ResolvedConfig): { name: string; file: string; outFile
     // `[name]` may carry a path (`'cli/index'` -> dist/cli/index.js): the
     // subdirectories come from the key, exactly as with rolldown.
     const outFile = join(cfg.outDir, cfg.entryFileNames.replace(/\[name\]/g, entry.name));
+
+    // **Nothing escapes output.dir.** A `..` in an input KEY (`{ "../x": … }`)
+    // or in `entryFileNames` used to write outside the directory the user
+    // declared, silently. `output.dir` is the contract: everything the build
+    // produces lives under it, and nowhere else.
+    const inside = relative(cfg.outDir, outFile);
+    if (inside.startsWith("..") || isAbsolute(inside)) {
+      throw new ConfigError(
+        `output: ${short(outFile)} is outside output.dir (${short(cfg.outDir)}).\n` +
+          `  Entry "${entry.name}" escapes it — a name may create subdirectories, never leave.\n` +
+          `  Set output.dir if you want to write somewhere else.`,
+      );
+    }
+
+    // A bundle must never be written OVER one of its own inputs. `output.dir: ""`
+    // used to resolve to the config's directory and do exactly that: the source
+    // was replaced by its own bundle, and there is no undo.
+    const victim = cfg.entries.find((e) => resolve(e.file) === resolve(outFile));
+    if (victim) {
+      throw new ConfigError(
+        `output: the bundle for "${entry.name}" would be written over a source file:\n` +
+          `    ${short(victim.file)}\n` +
+          `  Point output.dir at a directory of its own (dist/, build/…).`,
+      );
+    }
+
     const clash = seen.get(outFile);
     if (clash) {
       const hint = cfg.entryFileNames.includes("[name]")
@@ -118,6 +144,13 @@ export function runBuild(cfg: ResolvedConfig): BuildResult[] {
   // Before `clean` empties anything: a config that cannot produce a coherent
   // result must fail without having deleted the previous one.
   const plan = planOutputs(cfg);
+
+  if (existsSync(cfg.outDir) && !statSync(cfg.outDir).isDirectory()) {
+    throw new ConfigError(
+      `output.dir: ${short(cfg.outDir)} exists and is not a directory.\n` +
+        `  Remove it, or point output.dir somewhere else.`,
+    );
+  }
 
   if (cfg.clean) {
     assertSafeToClean(cfg.outDir);
