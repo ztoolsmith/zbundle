@@ -37,8 +37,11 @@ Usage:
   zbundle <entry> --watch -o <f>      Rebundle on every change
 
 Build options:
-  -c, --config <file>   Config file (default: zbundle.config.{ts,mts,js,mjs})
+  -c, --config <file>   Config file (default: zbundle.config.{ts,mts,js,mjs,cjs})
       --out-dir <dir>   Override output.dir
+      --dead            List removed code, per bundle
+
+Shared:
       --minify          Override minify (default: mode === "production")
 
 One-shot options:
@@ -52,6 +55,8 @@ One-shot options:
   -h, --help            This help
   -v, --version         The version
 
+The two families do not mix: a build option on the one-shot form (or the other
+way round) is an ERROR naming where it belongs, never a silent no-op.
 Command-line options WIN over the config file, which wins over the defaults.
 Statistics go to STDERR: \`zbundle src/index.js > out.js\` gives a clean file,
 and the numbers stay readable on screen.
@@ -206,10 +211,54 @@ function reportBuild(results: BuildResult[], cfg: ResolvedConfig, quiet: boolean
   );
 }
 
+/**
+ * An option belonging to the OTHER form is an error, never a no-op.
+ *
+ * `zbundle build -o out.js` used to exit 0 having ignored `-o` entirely — the
+ * exact behaviour this project refuses for config options ("an option that is
+ * accepted must act"). The CLI does not get an exemption from its own rule.
+ */
+function rejectForeignFlags(
+  values: Record<string, unknown>,
+  offenders: { flag: string; key: string; why: string }[],
+): void {
+  for (const { flag, key, why } of offenders) {
+    const given = values[key];
+    if (given === undefined || given === false) continue;
+    fail(`${flag} does not apply here.\n  ${why}`);
+  }
+}
+
 async function runBuildCommand(
   entryArg: string | undefined,
   values: Record<string, unknown>,
 ): Promise<void> {
+  rejectForeignFlags(values, [
+    {
+      flag: "-o/--out",
+      key: "out",
+      why: "`build` writes into output.dir, named by output.entryFileNames.\n" +
+        "  For a single file on a path you choose: zbundle <entry> -o <file>",
+    },
+    {
+      flag: "-f/--format",
+      key: "format",
+      why: "a config emits esm only (output.format).\n" +
+        "  For an IIFE: zbundle <entry> -f iife",
+    },
+    {
+      flag: "--graph",
+      key: "graph",
+      why: "the graph is a one-shot probe: zbundle <entry> --graph",
+    },
+    {
+      flag: "--watch",
+      key: "watch",
+      why: "reserved — planned for v0.4. Follow https://github.com/ztoolsmith/zbundle/issues\n" +
+        "  The one-shot form has an interim watch: zbundle <entry> --watch -o <file>",
+    },
+  ]);
+
   const { config, warnings, configFile } = await resolveForBuild(
     entryArg,
     values.config as string | undefined,
@@ -223,7 +272,14 @@ async function runBuildCommand(
   for (const w of warnings) process.stderr.write(`${yellow("⚠")} ${w}\n`);
   if (!values.quiet && configFile) process.stderr.write(dim(`— ${short(configFile)}\n`));
 
-  reportBuild(runBuild(config), config, values.quiet === true);
+  const results = runBuild(config, values.dead === true);
+  reportBuild(results, config, values.quiet === true);
+  if (values.dead === true) {
+    for (const r of results) {
+      process.stderr.write(`\n${bold(short(r.outFile))}`);
+      reportDead(r.dead);
+    }
+  }
 }
 
 // ────────────────────────────── zbundle <entry> ──────────────────────────────
@@ -274,6 +330,11 @@ function modulesOf(entry: string): string[] {
 }
 
 function runOneShot(positional: string, values: Record<string, unknown>): void {
+  rejectForeignFlags(values, [
+    { flag: "-c/--config", key: "config", why: "a config file is read by: zbundle build --config <file>" },
+    { flag: "--out-dir", key: "out-dir", why: "the one-shot form writes one file: use -o <file>, or zbundle build" },
+  ]);
+
   const entry = resolve(positional);
   if (!existsSync(entry)) fail(`entry not found: ${positional}`);
 

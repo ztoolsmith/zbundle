@@ -475,7 +475,7 @@ test("live binding imported BY NAME: accepted (hoisting handles it)", () => {
 test("VERSION follows package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.2.2");
+  assert.equal(zbundle.VERSION, "0.2.3");
 });
 
 // ══════════════════ v0.3 : LE TREE-SHAKING ══════════════════
@@ -565,7 +565,7 @@ test("non-regression: the linking projects keep their behaviour", () => {
 test("VERSION matches package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.2.2");
+  assert.equal(zbundle.VERSION, "0.2.3");
 });
 
 // ══════════════════ LE CLI ══════════════════
@@ -1323,4 +1323,85 @@ test("config: a config exporting a Promise is awaited", () => {
   });
   assert.equal(build(dir).status, 0);
   assert.ok(exists(dir, "dist", "m.js"));
+});
+
+// ---- an option that is accepted must ACT — the CLI included ----
+
+const FOREIGN_ON_BUILD = [
+  ["--graph", /--graph does not apply here/],
+  ["-o", /-o\/--out does not apply here/],
+  ["-f", /-f\/--format does not apply here/],
+  ["--watch", /--watch does not apply here/],
+];
+
+for (const [flag, expected] of FOREIGN_ON_BUILD) {
+  test(`CLI: \`build ${flag}\` is refused, not silently ignored`, () => {
+    const dir = tmpProject({
+      "m.js": `console.log(1);`,
+      "zbundle.config.ts": `export default { input: "m.js" };`,
+    });
+    // Flags taking a value need one, or parseArgs complains about the wrong thing.
+    const args = flag === "-o" ? ["-o", "out.js"] : flag === "-f" ? ["-f", "iife"] : [flag];
+    const r = build(dir, args);
+    assert.equal(r.status, 1, `\`build ${flag}\` exited ${r.status} — it was ignored`);
+    assert.match(r.stderr, expected);
+    assert.ok(!exists(dir, "dist"), "a bundle was emitted despite the refusal");
+  });
+}
+
+test("CLI: `build --watch` names the version it is planned for", () => {
+  const dir = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default { input: "m.js" };`,
+  });
+  const r = build(dir, ["--watch"]);
+  assert.match(r.stderr, /planned for v0\.4/);
+  // The interim answer is given rather than left to be guessed.
+  assert.match(r.stderr, /zbundle <entry> --watch -o <file>/);
+});
+
+test("CLI: build-only flags are refused on the one-shot form", () => {
+  const dir = tmpProject({
+    "m.js": `console.log(1);`,
+    "zbundle.config.ts": `export default { input: "m.js" };`,
+  });
+  const cfg = cli(["m.js", "--config", "zbundle.config.ts"], dir);
+  assert.equal(cfg.status, 1);
+  assert.match(cfg.stderr, /-c\/--config does not apply here/);
+  assert.equal(cfg.stdout, "", "invalid JS reached stdout");
+
+  const outDir = cli(["m.js", "--out-dir", "d"], dir);
+  assert.equal(outDir.status, 1);
+  assert.match(outDir.stderr, /--out-dir does not apply here/);
+});
+
+test("CLI: `build --dead` really lists what tree-shaking removed", () => {
+  const dir = tmpProject({
+    "m.js": `const deadThing = () => "never";\nconsole.log("ok");`,
+    "zbundle.config.ts": `export default { input: "m.js" };`,
+  });
+  const r = build(dir, ["--dead"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /removed by tree-shaking/);
+  assert.match(r.stderr, /deadThing/);
+  // And the bundle is still produced, correctly.
+  assert.ok(exists(dir, "dist", "m.js"));
+  assert.doesNotMatch(read(dir, "dist", "m.js"), /deadThing/);
+});
+
+test("CLI: --quiet and --minify apply to BOTH forms", () => {
+  const dir = tmpProject({
+    "lib.js": `export const aLongExportedName = () => 1;`,
+    "m.js": `import { aLongExportedName } from './lib.js'; console.log(aLongExportedName());`,
+    "zbundle.config.ts": `export default { input: "m.js" };`,
+  });
+  const b = build(dir, ["--minify", "--quiet"]);
+  assert.equal(b.status, 0, b.stderr);
+  assert.equal(b.stderr, "", "--quiet left output on stderr");
+  assert.doesNotMatch(read(dir, "dist", "m.js"), /aLongExportedName/);
+
+  const one = cli(["m.js", "--minify", "--quiet"], dir);
+  assert.equal(one.status, 0);
+  assert.equal(one.stderr, "");
+  assert.doesNotMatch(one.stdout, /aLongExportedName/);
 });

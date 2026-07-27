@@ -135,7 +135,7 @@ function planOutputs(cfg: ResolvedConfig): { name: string; file: string; outFile
  * copy of it. Factoring it out means emitting a shared chunk, which is code
  * splitting — a chantier of its own, not something to fake here.
  */
-export function runBuild(cfg: ResolvedConfig): BuildResult[] {
+export function runBuild(cfg: ResolvedConfig, withDead = false): BuildResult[] {
   for (const e of cfg.entries) {
     if (!existsSync(e.file)) {
       throw new ConfigError(`input: entry not found: ${e.file}`);
@@ -162,7 +162,7 @@ export function runBuild(cfg: ResolvedConfig): BuildResult[] {
   for (const { name, file, outFile } of plan) {
     const report = bundleWith(file, {
       format: "esm",
-      dead: false,
+      dead: withDead,
       minify: cfg.minify,
       resolve: { alias: cfg.alias, extensions: cfg.extensions },
     }) as { code: string; stats: Stats; dead: Dead[] };

@@ -4,6 +4,47 @@ All notable changes to zbundle. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/).
 
+## [0.2.3] — 2026-07-27
+
+The rule this project applies to config options — **an option that is accepted
+must ACT** — now applies to the command line itself.
+
+### Fixed
+
+- **Seven command-line options were accepted and then ignored.** `zbundle build`
+  swallowed `-o`, `-f`, `--graph` and `--watch` without a word, and the one-shot
+  form did the same with `--config` and `--out-dir` — every one of them exiting
+  0 as if it had worked. Each is now refused, naming the form it belongs to:
+
+  ```
+  ✘ -o/--out does not apply here.
+    `build` writes into output.dir, named by output.entryFileNames.
+    For a single file on a path you choose: zbundle <entry> -o <file>
+  ```
+
+  `--watch` on `build` names the version it is planned for (v0.4) and points at
+  the interim one-shot watch, rather than pretending the flag did something.
+
+- **A config using non-erasable TypeScript blamed the wrong thing.** An `enum`
+  (or `namespace`, or parameter properties) cannot be handled by type stripping
+  at all, but the error read *"TypeScript configs need Node 22.6+ — you are on
+  v24.15.0"*, which is both untrue and useless. The two causes are now told
+  apart, and each names its own way out.
+
+### Added
+
+- **`zbundle build --dead`** lists what tree-shaking removed, bundle by bundle.
+  It was the one flag among the seven worth implementing rather than refusing.
+
+### Verified
+
+The **jiti fallback was exercised for real** for the first time — jiti 2.7.0
+installed in a throwaway project, with a config using an `enum`: the native strip
+fails, jiti takes over, and the config's `mode: "production"` is honoured end to
+end. Until now that path had been written but never run.
+
+126 Node tests (+8), 84 Zig tests, 21/21 in the playground judge.
+
 ## [0.2.2] — 2026-07-27
 
 Everything a config file can say, walked one key at a time — including the paths

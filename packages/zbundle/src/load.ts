@@ -94,12 +94,19 @@ export async function loadConfigModule(file: string): Promise<unknown> {
     if (!/\.m?ts$/.test(file)) throw err;
     const viaJiti = await tryJiti(file);
     if (viaJiti !== undefined) return viaJiti;
-    throw new ConfigError(
-      `cannot load ${file}\n` +
-        `  ${err instanceof Error ? err.message : String(err)}\n` +
-        `  TypeScript configs need Node 22.6+ (native type stripping) — you are on ${process.version}.\n` +
-        `  Either upgrade Node, install jiti (\`npm i -D jiti\`), or rename the file to zbundle.config.mjs.`,
-    );
+
+    // Two very different causes hide behind the same failure, and telling a user
+    // "you need Node 22.6+" while they are on v24 is worse than saying nothing.
+    const message = err instanceof Error ? err.message : String(err);
+    const notErasable = /strip-only|not supported in strip/i.test(message);
+    const why = notErasable
+      ? `  That syntax cannot be ERASED — \`enum\`, \`namespace\` and parameter properties\n` +
+        `  emit code, so type stripping alone cannot handle them.\n` +
+        `  Either avoid it in the config (a plain object needs none of it),\n` +
+        `  install jiti (\`npm i -D jiti\`), or use zbundle.config.mjs.`
+      : `  TypeScript configs need Node 22.6+ (native type stripping) — you are on ${process.version}.\n` +
+        `  Either upgrade Node, install jiti (\`npm i -D jiti\`), or use zbundle.config.mjs.`;
+    throw new ConfigError(`cannot load ${file}\n  ${message}\n${why}`);
   }
 }
 

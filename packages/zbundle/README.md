@@ -258,7 +258,7 @@ in the bundle. zbundle builds libraries, not applications, for now.
 | | |
 |---|---|
 | Zig tests | 84 |
-| Node tests | 118 |
+| Node tests | 126 |
 | the judge (the bundle runs and says what the original says) | **21/21** |
 | graph fixtures | 12/12 |
 | real-world projects | 3/3 |
