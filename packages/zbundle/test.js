@@ -475,7 +475,7 @@ test("live binding imported BY NAME: accepted (hoisting handles it)", () => {
 test("VERSION follows package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.2.3");
+  assert.equal(zbundle.VERSION, "0.3.0");
 });
 
 // ══════════════════ v0.3 : LE TREE-SHAKING ══════════════════
@@ -565,7 +565,7 @@ test("non-regression: the linking projects keep their behaviour", () => {
 test("VERSION matches package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.2.3");
+  assert.equal(zbundle.VERSION, "0.3.0");
 });
 
 // ══════════════════ LE CLI ══════════════════
@@ -985,10 +985,10 @@ test("config: no config file at all is a clear error, with the names tried", () 
 // ---- the RESERVED options: each one errors, and names its version ----
 
 const RESERVED_CASES = [
-  ["sourcemap", `{ input: "m.js", sourcemap: true }`, /sourcemap: reserved — planned for v0\.3/],
-  ["watch", `{ input: "m.js", watch: true }`, /watch: reserved — planned for v0\.4/],
-  ["output.chunkFileNames", `{ input: "m.js", output: { chunkFileNames: "[name].js" } }`, /chunkFileNames: reserved — planned for v0\.5/],
-  ["output.assetFileNames", `{ input: "m.js", output: { assetFileNames: "[name][ext]" } }`, /assetFileNames: reserved — planned for v0\.5/],
+  ["sourcemap", `{ input: "m.js", sourcemap: true }`, /sourcemap: reserved — planned for v0\.4/],
+  ["watch", `{ input: "m.js", watch: true }`, /watch: reserved — planned for v0\.5/],
+  ["output.chunkFileNames", `{ input: "m.js", output: { chunkFileNames: "[name].js" } }`, /chunkFileNames: reserved — planned for v0\.6/],
+  ["output.assetFileNames", `{ input: "m.js", output: { assetFileNames: "[name][ext]" } }`, /assetFileNames: reserved — planned for v0\.6/],
 ];
 
 for (const [name, body, expected] of RESERVED_CASES) {
@@ -1355,7 +1355,7 @@ test("CLI: `build --watch` names the version it is planned for", () => {
     "zbundle.config.ts": `export default { input: "m.js" };`,
   });
   const r = build(dir, ["--watch"]);
-  assert.match(r.stderr, /planned for v0\.4/);
+  assert.match(r.stderr, /planned for v0\.5/);
   // The interim answer is given rather than left to be guessed.
   assert.match(r.stderr, /zbundle <entry> --watch -o <file>/);
 });
@@ -1404,4 +1404,241 @@ test("CLI: --quiet and --minify apply to BOTH forms", () => {
   assert.equal(one.status, 0);
   assert.equal(one.stderr, "");
   assert.doesNotMatch(one.stdout, /aLongExportedName/);
+});
+
+// ══════════════════ tsconfig.json ══════════════════
+// What a STRIPPER reads from a tsconfig: baseUrl/paths, jsx, jsxImportSource.
+// Everything else is ignored BY CONTRACT, and these tests pin both halves.
+
+test("tsconfig: paths with a wildcard become a resolution prefix", () => {
+  const dir = tmpProject({
+    "src/util.ts": `export const helper = (n: number) => n * 2;`,
+    "src/main.ts": `import { helper } from '@/util.ts'; console.log(helper(21));`,
+    "tsconfig.json": `{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["./src/*"] } } }`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  // Inlined, not left as an external import: the tsconfig did the resolving.
+  assert.match(read(dir, "dist", "main.js"), /n \* 2/);
+  assert.equal(execFileSync(process.execPath, [path.join(dir, "dist", "main.js")], { encoding: "utf8" }), "42\n");
+});
+
+test("tsconfig: a path WITHOUT a wildcard is an exact mapping", () => {
+  const dir = tmpProject({
+    "vendor/jq.ts": `export const jq = () => "jq";`,
+    "src/main.ts": `import { jq } from 'jquery'; console.log(jq());`,
+    "tsconfig.json": `{ "compilerOptions": { "paths": { "jquery": ["./vendor/jq.ts"] } } }`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  assert.equal(build(dir).status, 0);
+  assert.match(read(dir, "dist", "main.js"), /"jq"/);
+});
+
+test("tsconfig: an exact mapping does not swallow a longer specifier", () => {
+  const dir = tmpProject({
+    "vendor/jq.ts": `export const jq = () => "jq";`,
+    // `jquery-ui` is a DIFFERENT package: it must stay external, not be
+    // captured by the `jquery` mapping.
+    "src/main.ts": `import { jq } from 'jquery'; import 'jquery-ui'; console.log(jq());`,
+    "tsconfig.json": `{ "compilerOptions": { "paths": { "jquery": ["./vendor/jq.ts"] } } }`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  assert.equal(build(dir).status, 0);
+  assert.match(read(dir, "dist", "main.js"), /'jquery-ui'/);
+});
+
+test("tsconfig: JSONC — comments and trailing commas are legal", () => {
+  const dir = tmpProject({
+    "src/dep.ts": `export const v = 1;`,
+    "src/main.ts": `import { v } from '@/dep.ts'; console.log(v);`,
+    "tsconfig.json": `{
+      // a line comment, and a URL that must survive: http://example.com
+      /* a block comment */
+      "compilerOptions": {
+        "paths": { "@/*": ["./src/*"], },
+      },
+    }`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(read(dir, "dist", "main.js"), /const v = 1/);
+});
+
+test("tsconfig: malformed JSONC names the position", () => {
+  const dir = tmpProject({
+    "src/main.ts": `console.log(1);`,
+    "tsconfig.json": `{ "compilerOptions": { "paths": { "@/*": ["./src/*"] }`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /tsconfig\.json:\d+:\d+/);
+});
+
+test("tsconfig: extends resolves paths against the file that DECLARED them", () => {
+  const dir = tmpProject({
+    "cfg/base.json": `{ "compilerOptions": { "paths": { "@/*": ["../src/*"] } } }`,
+    "tsconfig.json": `{ "extends": "./cfg/base.json" }`,
+    "src/dep.ts": `export const v = 7;`,
+    "src/main.ts": `import { v } from '@/dep.ts'; console.log(v);`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  // `../src/*` only works when resolved against cfg/, not against the root.
+  assert.match(read(dir, "dist", "main.js"), /const v = 7/);
+});
+
+test("tsconfig: a circular extends is an error naming the loop", () => {
+  const dir = tmpProject({
+    "src/main.ts": `console.log(1);`,
+    "tsconfig.json": `{ "extends": "./b.json" }`,
+    "b.json": `{ "extends": "./tsconfig.json" }`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /circular extends/);
+  assert.match(r.stderr, /b\.json/);
+});
+
+test('tsconfig: "jsx": "preserve" is refused, and says it always will be', () => {
+  const dir = tmpProject({
+    "main.jsx": `console.log(1);`,
+    "tsconfig.json": `{ "compilerOptions": { "jsx": "preserve" } }`,
+    "zbundle.config.ts": `export default { input: "main.jsx" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /"jsx": "preserve" is not supported/);
+  assert.match(r.stderr, /will not be/); // not a "planned for vX" promise
+});
+
+test('tsconfig: "jsx": "react" warns that the automatic runtime is used anyway', () => {
+  const dir = tmpProject({
+    "main.jsx": `console.log(1);`,
+    "tsconfig.json": `{ "compilerOptions": { "jsx": "react" } }`,
+    "zbundle.config.ts": `export default { input: "main.jsx" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /classic runtime/);
+  assert.match(r.stderr, /automatic one/);
+});
+
+test("tsconfig: several path targets — the first is used, and it is said", () => {
+  const dir = tmpProject({
+    "src/dep.ts": `export const v = 1;`,
+    "other/dep.ts": `export const v = 2;`,
+    "src/main.ts": `import { v } from '@/dep.ts'; console.log(v);`,
+    "tsconfig.json": `{ "compilerOptions": { "paths": { "@/*": ["./src/*", "./other/*"] } } }`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /lists 2 targets/);
+  assert.match(read(dir, "dist", "main.js"), /const v = 1/); // the first one
+});
+
+test("tsconfig: TWO tsconfigs, each governing its own package", () => {
+  const dir = tmpProject({
+    "pkgs/a/tsconfig.json": `{ "compilerOptions": { "paths": { "#own/*": ["./src/*"] } } }`,
+    "pkgs/b/tsconfig.json": `{ "compilerOptions": { "paths": { "#own/*": ["./src/*"] } } }`,
+    "pkgs/a/src/own.ts": `export const tag = () => "A";`,
+    "pkgs/b/src/own.ts": `export const tag = () => "B";`,
+    "pkgs/b/src/index.ts": `import { tag } from '#own/own.ts'; export const b = () => tag();`,
+    "pkgs/a/src/main.ts":
+      `import { tag } from '#own/own.ts';\n` +
+      `import { b } from '../../b/src/index.ts';\n` +
+      `console.log(tag(), b());`,
+    "zbundle.config.ts": `export default { input: "pkgs/a/src/main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  // The SAME key `#own/` means two different directories. A global alias table
+  // could not express that; scoped aliases can.
+  assert.equal(
+    execFileSync(process.execPath, [path.join(dir, "dist", "main.js")], { encoding: "utf8" }),
+    "A B\n",
+  );
+});
+
+test("tsconfig: resolve.alias WINS over the tsconfig paths", () => {
+  const dir = tmpProject({
+    "src/dep.ts": `export const v = 1;`,
+    "chosen/dep.ts": `export const v = 999;`,
+    "src/main.ts": `import { v } from '@/dep.ts'; console.log(v);`,
+    "tsconfig.json": `{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }`,
+    "zbundle.config.ts": `export default {
+      input: "src/main.ts",
+      resolve: { alias: { "@/": "./chosen/" } },
+    };`,
+  });
+  assert.equal(build(dir).status, 0);
+  // Whoever wrote the zbundle config knew what they were doing.
+  assert.match(read(dir, "dist", "main.js"), /const v = 999/);
+});
+
+test("tsconfig: jsx.importSource in the config WINS over the tsconfig's", () => {
+  const dir = tmpProject({
+    "main.jsx": `const A = () => <b>x</b>; console.log(typeof A);`,
+    "tsconfig.json": `{ "compilerOptions": { "jsxImportSource": "preact" } }`,
+    "zbundle.config.ts": `export default { input: "main.jsx", jsx: { importSource: "chosen" } };`,
+  });
+  assert.equal(build(dir).status, 0);
+  const code = read(dir, "dist", "main.js");
+  assert.match(code, /'chosen\/jsx-runtime'/);
+  assert.doesNotMatch(code, /'preact\/jsx-runtime'/);
+});
+
+test("tsconfig: false ignores it entirely", () => {
+  const dir = tmpProject({
+    "src/dep.ts": `export const v = 1;`,
+    "src/main.ts": `import { v } from '@/dep.ts'; console.log(v);`,
+    "tsconfig.json": `{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }`,
+    "zbundle.config.ts": `export default { input: "src/main.ts", tsconfig: false };`,
+  });
+  assert.equal(build(dir).status, 0);
+  // Not resolved, so `@/dep.ts` stays a bare specifier: external, still imported.
+  assert.match(read(dir, "dist", "main.js"), /'@\/dep\.ts'/);
+});
+
+test("tsconfig: an explicit path is used, and a missing one is an error", () => {
+  const dir = tmpProject({
+    "src/dep.ts": `export const v = 3;`,
+    "src/main.ts": `import { v } from '@/dep.ts'; console.log(v);`,
+    "custom/ts.json": `{ "compilerOptions": { "paths": { "@/*": ["../src/*"] } } }`,
+    "zbundle.config.ts": `export default { input: "src/main.ts", tsconfig: "custom/ts.json" };`,
+  });
+  assert.equal(build(dir).status, 0);
+  assert.match(read(dir, "dist", "main.js"), /const v = 3/);
+
+  fs.writeFileSync(
+    path.join(dir, "zbundle.config.ts"),
+    `export default { input: "src/main.ts", tsconfig: "nope.json" };`,
+  );
+  const missing = build(dir);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /tsconfig: not found/);
+});
+
+test("tsconfig: everything outside the closed list is ignored in silence", () => {
+  const dir = tmpProject({
+    "src/main.ts": `export const x: number = 1; console.log(x);`,
+    // Not one of these changes what zbundle does, and none may warn: ignoring
+    // them is the contract, not an oversight.
+    "tsconfig.json": `{ "compilerOptions": {
+      "target": "ES5", "module": "commonjs", "strict": true,
+      "lib": ["dom"], "types": ["node"], "declaration": true,
+      "allowJs": true, "checkJs": true, "composite": true
+    } }`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /⚠|unknown|ignored/);
+  // ES5 target notwithstanding: there is no downleveling, the arrow survives.
+  assert.ok(exists(dir, "dist", "main.js"));
 });

@@ -77,6 +77,8 @@ export default defineConfig({
 | `resolve.alias` | `{}` | exact PREFIX substitution, applied before the external test |
 | `resolve.extensions` | `['.ts','.tsx','.js','.jsx','.mjs']` | order is meaning |
 | `minify` | `mode === 'production'` | shortens cross-module names |
+| `jsx.importSource` | the tsconfig's, else `'react'` | what the JSX transform imports from |
+| `tsconfig` | auto-detected | a path to force one, or `false` to ignore them |
 
 Lookup order: `zbundle.config.ts` → `.mts` → `.js` → `.mjs` → `.cjs`, or
 `--config`. A `.cjs` config types fine with JSDoc
@@ -86,6 +88,29 @@ TypeScript loads through Node's own type stripping (22.6+), so nothing extra is
 installed; jiti is used as a fallback when the project already has it.
 
 **Command line > config file > defaults.**
+
+### tsconfig.json
+
+zbundle reads the project's tsconfig — the nearest one to each file, so a
+monorepo's packages each get their own. It takes exactly three things:
+
+| read | effect |
+|---|---|
+| `baseUrl` + `paths` | resolution aliases (wildcards are prefixes, the rest are exact) |
+| `jsx` | `"preserve"` is refused; `"react"` warns that the automatic runtime is used |
+| `jsxImportSource` | handed to the JSX transform |
+
+**Everything else is ignored on purpose** — `target`, `module`, `strict`, `lib`,
+`types`, `references`… zbundle erases types, it never checks them, and an option
+it claimed to read would have to change what it does. Type-checking stays `tsc`'s
+job.
+
+Comments and trailing commas are fine. `extends` chains are followed, and paths
+inside them stay relative to the file that declared them. Set `tsconfig: false`
+to ignore all of it, or `tsconfig: "path/to/file.json"` to force one.
+
+Whatever the zbundle config says **wins**: `resolve.alias` merges over `paths`,
+`jsx.importSource` overrides `jsxImportSource`.
 
 ### What it refuses, and why
 
@@ -257,9 +282,9 @@ in the bundle. zbundle builds libraries, not applications, for now.
 
 | | |
 |---|---|
-| Zig tests | 84 |
-| Node tests | 126 |
-| the judge (the bundle runs and says what the original says) | **21/21** |
+| Zig tests | 93 |
+| Node tests | 142 |
+| the judge (the bundle runs and says what the original says) | **25/25** |
 | graph fixtures | 12/12 |
 | real-world projects | 3/3 |
 | real world | **lodash-es: 172 modules, 131 → 81 KB, 30 ms**, identical output |

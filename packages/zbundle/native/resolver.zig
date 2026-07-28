@@ -34,7 +34,46 @@ pub const EXTENSIONS = [_][]const u8{ ".ts", ".tsx", ".js", ".jsx", ".mjs" };
 /// the **config file** — not the cwd — before handing it over: a config is read
 /// relative to where it lives, and doing it up there keeps this file free of any
 /// notion of "project root".
-pub const Alias = struct { from: []const u8, to: []const u8 };
+pub const Alias = struct {
+    from: []const u8,
+    to: []const u8,
+    /// Match the specifier WHOLE instead of as a prefix.
+    ///
+    /// A tsconfig `paths` entry without a `*` is an EXACT mapping:
+    /// `"jquery": ["./vendor/jq.js"]` must map `jquery` and nothing else — as a
+    /// prefix it would also swallow `jquery-ui`. Wildcard entries stay prefixes.
+    exact: bool = false,
+    /// The directory this alias is valid UNDER. Empty = the whole build.
+    ///
+    /// This is what makes per-file `tsconfig.json` work: a monorepo has one
+    /// tsconfig per package, each with its own `paths`, and a module must be
+    /// resolved by the one that governs IT — not by whichever happened to be
+    /// found first. The build layer stamps each alias with its tsconfig's
+    /// directory; resolution then only considers the aliases whose scope
+    /// contains the importer.
+    scope: []const u8 = "",
+};
+
+/// Does the specifier match this alias — whole for an exact entry, by prefix
+/// otherwise?
+fn aliasMatches(al: Alias, specifier: []const u8) bool {
+    return if (al.exact)
+        std.mem.eql(u8, specifier, al.from)
+    else
+        std.mem.startsWith(u8, specifier, al.from);
+}
+
+/// Does this alias govern a file sitting in `from_dir`?
+///
+/// A scope contains a directory when it IS that directory or a prefix of it at a
+/// separator boundary — `/p/a` must not capture `/p/ab`.
+fn aliasApplies(al: Alias, from_dir: []const u8) bool {
+    if (al.scope.len == 0) return true;
+    if (std.mem.eql(u8, from_dir, al.scope)) return true;
+    return from_dir.len > al.scope.len and
+        std.mem.startsWith(u8, from_dir, al.scope) and
+        from_dir[al.scope.len] == std.fs.path.sep;
+}
 
 /// What the build layer is allowed to change about resolution. The defaults ARE
 /// the historical behaviour, so `.{}` resolves exactly as before.
@@ -55,11 +94,19 @@ pub const Config = struct {
 /// When several aliases match, the LONGEST prefix wins: without that rule `'@'`
 /// would shadow `'@scope'` depending on declaration order, and a config's
 /// meaning must not depend on key order.
-fn applyAlias(a: Allocator, cfg: Config, specifier: []const u8) Allocator.Error!?[]const u8 {
+fn applyAlias(a: Allocator, cfg: Config, from_dir: []const u8, specifier: []const u8) Allocator.Error!?[]const u8 {
     var best: ?Alias = null;
     for (cfg.alias) |al| {
-        if (!std.mem.startsWith(u8, specifier, al.from)) continue;
-        if (best == null or al.from.len > best.?.from.len) best = al;
+        if (!aliasApplies(al, from_dir)) continue;
+        if (!aliasMatches(al, specifier)) continue;
+        // The NEAREST tsconfig wins first (longest scope), then the most
+        // specific prefix. Without the scope tie-break, a root tsconfig would
+        // shadow a package's own `paths`.
+        const b = best orelse {
+            best = al;
+            continue;
+        };
+        if (al.scope.len > b.scope.len or (al.scope.len == b.scope.len and al.from.len > b.from.len)) best = al;
     }
     const hit = best orelse return null;
     // Separate statement: `[]u8` does not coerce into the `?[]const u8` payload
@@ -132,10 +179,10 @@ pub fn isBare(specifier: []const u8) bool {
 /// touching the disk), so the answer has to account for aliases here too —
 /// otherwise `'@/x'` would be filed as an external and the alias would never
 /// fire. One rule, one place: `resolve` calls this very function.
-pub fn isExternal(cfg: Config, specifier: []const u8) bool {
+pub fn isExternal(cfg: Config, from_dir: []const u8, specifier: []const u8) bool {
     if (!isBare(specifier)) return false;
     for (cfg.alias) |al| {
-        if (std.mem.startsWith(u8, specifier, al.from)) return false;
+        if (aliasApplies(al, from_dir) and aliasMatches(al, specifier)) return false;
     }
     return true;
 }
@@ -168,8 +215,8 @@ pub fn resolve(
     cfg: Config,
     diag: *Diagnostic,
 ) Error!Resolution {
-    if (isExternal(cfg, specifier)) return .{ .kind = .external, .path = specifier };
-    const spec = (try applyAlias(a, cfg, specifier)) orelse specifier;
+    if (isExternal(cfg, from_dir, specifier)) return .{ .kind = .external, .path = specifier };
+    const spec = (try applyAlias(a, cfg, from_dir, specifier)) orelse specifier;
 
     const base = try std.fs.path.resolve(a, &.{ from_dir, spec });
     var tried: std.ArrayList([]const u8) = .empty;
@@ -274,8 +321,12 @@ const Sandbox = struct {
     }
     /// Same, with an explicit resolution config (aliases, custom table).
     fn relCfg(self: *Sandbox, specifier: []const u8, cfg: Config) ![]const u8 {
+        return self.relFrom(self.root, specifier, cfg);
+    }
+    /// Same, resolving from an arbitrary directory (scoped aliases need this).
+    fn relFrom(self: *Sandbox, from_dir: []const u8, specifier: []const u8, cfg: Config) ![]const u8 {
         var diag: Diagnostic = .{};
-        const r = try resolve(self.a(), io, self.root, specifier, cfg, &diag);
+        const r = try resolve(self.a(), io, from_dir, specifier, cfg, &diag);
         if (r.kind == .external) return r.path;
         try std.testing.expect(std.mem.startsWith(u8, r.path, self.root));
         return r.path[self.root.len + 1 ..];
@@ -496,4 +547,90 @@ test "custom extension table: index resolution follows it too" {
     defer s.deinit();
     try s.write("dir/index.mjs", "");
     try std.testing.expectEqualStrings("dir/index.mjs", try s.relCfg("./dir", .{ .extensions = &.{".mjs"} }));
+}
+
+// ---- scoped aliases: one tsconfig per package, each governing its own files ----
+
+test "alias scope: only files UNDER the scope see the alias" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("pkg/src/x.ts", "");
+    const pkg = try std.fs.path.join(s.a(), &.{ s.root, "pkg" });
+    const target = try std.fs.path.join(s.a(), &.{ s.root, "pkg/src" });
+    const cfg: Config = .{ .alias = &.{.{ .from = "@", .to = target, .scope = pkg }} };
+
+    // A file inside pkg/ resolves through it…
+    try std.testing.expectEqualStrings("pkg/src/x.ts", try s.relFrom(pkg, "@/x.ts", cfg));
+    // …a file OUTSIDE does not: the alias is not its business, so `@/x.ts` is
+    // just a bare specifier again.
+    try std.testing.expectEqualStrings("@/x.ts", try s.relFrom(s.root, "@/x.ts", cfg));
+}
+
+test "alias scope: the NEAREST tsconfig wins over an outer one" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("outer/x.ts", "");
+    try s.write("pkg/inner/x.ts", "");
+    const root = s.root;
+    const pkg = try std.fs.path.join(s.a(), &.{ s.root, "pkg" });
+    const outer = try std.fs.path.join(s.a(), &.{ s.root, "outer" });
+    const inner = try std.fs.path.join(s.a(), &.{ s.root, "pkg/inner" });
+    // Same key `@/`, two scopes: the root one and the package one.
+    const cfg: Config = .{ .alias = &.{
+        .{ .from = "@", .to = outer, .scope = root },
+        .{ .from = "@", .to = inner, .scope = pkg },
+    } };
+    // From inside the package, ITS mapping applies…
+    try std.testing.expectEqualStrings("pkg/inner/x.ts", try s.relFrom(pkg, "@/x.ts", cfg));
+    // …and elsewhere the outer one still does.
+    try std.testing.expectEqualStrings("outer/x.ts", try s.relFrom(root, "@/x.ts", cfg));
+}
+
+test "alias scope: a prefix is not a parent (/p/a must not capture /p/ab)" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("a/t.ts", "");
+    try s.write("ab/other.ts", "");
+    const a_dir = try std.fs.path.join(s.a(), &.{ s.root, "a" });
+    const ab_dir = try std.fs.path.join(s.a(), &.{ s.root, "ab" });
+    const cfg: Config = .{ .alias = &.{.{ .from = "#", .to = a_dir, .scope = a_dir }} };
+    // `ab` starts with `a` as a STRING but is not inside it: the scope must be
+    // compared at a separator boundary.
+    try std.testing.expectEqualStrings("#/t.ts", try s.relFrom(ab_dir, "#/t.ts", cfg));
+    try std.testing.expectEqualStrings("a/t.ts", try s.relFrom(a_dir, "#/t.ts", cfg));
+}
+
+test "alias scope: an unscoped alias still applies everywhere" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("deep/nested/x.ts", "");
+    const target = try std.fs.path.join(s.a(), &.{ s.root, "deep/nested" });
+    const from = try std.fs.path.join(s.a(), &.{ s.root, "deep" });
+    const cfg: Config = .{ .alias = &.{.{ .from = "@", .to = target }} };
+    try std.testing.expectEqualStrings("deep/nested/x.ts", try s.relFrom(from, "@/x.ts", cfg));
+}
+
+test "alias scope: isExternal agrees with resolve, per directory" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    const pkg = try std.fs.path.join(s.a(), &.{ s.root, "pkg" });
+    const cfg: Config = .{ .alias = &.{.{ .from = "@", .to = pkg, .scope = pkg }} };
+    // The graph asks isExternal BEFORE touching the disk: it must give the same
+    // answer resolve would, scope included.
+    try std.testing.expect(!isExternal(cfg, pkg, "@/x.ts"));
+    try std.testing.expect(isExternal(cfg, s.root, "@/x.ts"));
+    try std.testing.expect(isExternal(cfg, pkg, "react"));
+}
+
+test "alias exact: a whole-specifier mapping does not swallow its neighbours" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("vendor/jq.js", "");
+    const target = try std.fs.path.join(s.a(), &.{ s.root, "vendor/jq.js" });
+    const cfg: Config = .{ .alias = &.{.{ .from = "jquery", .to = target, .exact = true }} };
+    try std.testing.expectEqualStrings("vendor/jq.js", try s.relCfg("jquery", cfg));
+    // `jquery-ui` is a DIFFERENT package: an exact mapping must leave it alone.
+    try std.testing.expectEqualStrings("jquery-ui", try s.relCfg("jquery-ui", cfg));
+    try std.testing.expect(isExternal(cfg, s.root, "jquery-ui"));
+    try std.testing.expect(!isExternal(cfg, s.root, "jquery"));
 }

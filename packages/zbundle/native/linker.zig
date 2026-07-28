@@ -65,6 +65,9 @@ pub const Options = struct {
     /// Shorten every top-level binding instead of keeping its source name.
     /// See `assignNames` for exactly what this does — and does not — do.
     minify: bool = false,
+    /// `jsxImportSource`: what the JSX transform imports its runtime from.
+    /// Comes from the tsconfig, or from the zbundle config when it says so.
+    jsx_import_source: []const u8 = "react",
 };
 
 pub const Stats = struct {
@@ -766,6 +769,40 @@ fn shortName(a: Allocator, n: u32) Error![]const u8 {
                 if (!std.mem.eql(u8, final, b.name)) b.new_name = final;
             }
         }
+
+        // A BARE side-effect import of an EXTERNAL (`import 'polyfill'`)
+        // declares no binding, so nothing above ever registers it — and it
+        // silently vanished from the bundle. Evaluating the module IS the point
+        // of that syntax, so it must survive. The graph knows the edge;
+        // `info.imports` having no entry for the specifier is what tells us
+        // nothing was imported BY NAME.
+        //
+        // Externals that DID import names and lost them all to shaking are a
+        // different case, and still drop out: there is nothing left to evaluate
+        // them for.
+        for (self.order.items) |id| {
+            const m = &self.mods[id];
+            for (self.g.edges) |e| {
+                if (e.from != id or e.external == null or e.kind != .import) continue;
+                var by_name = false;
+                for (m.info.imports) |imp| {
+                    if (std.mem.eql(u8, imp.specifier, e.specifier)) {
+                        by_name = true;
+                        break;
+                    }
+                }
+                if (!by_name) try self.ensureExternal(e.specifier);
+            }
+        }
+    }
+
+    /// Registers an external with no imported names — emitted as `import 'x';`.
+    fn ensureExternal(self: *Linker, specifier: []const u8) Error!void {
+        const gop = try self.by_specifier.getOrPut(self.a, specifier);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = @intCast(self.externals.items.len);
+            try self.externals.append(self.a, .{ .specifier = specifier });
+        }
     }
 
     fn resolveImport(self: *Linker, from: ModuleId, imp: zc.semantic.ImportEntry) Error![]const u8 {
@@ -1153,7 +1190,10 @@ pub fn bundleReport(a: Allocator, io: Io, entry: []const u8, err: *BundleError, 
     const t0 = Io.Clock.awake.now(io).nanoseconds;
 
     var gerr: graph.BuildError = .{};
-    const built = graph.build(a, io, entry, opts.resolve, &gerr) catch |e| switch (e) {
+    const built = graph.build(a, io, entry, .{
+        .resolve = opts.resolve,
+        .jsx_import_source = opts.jsx_import_source,
+    }, &gerr) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.BuildFailed => {
             err.message = gerr.message;
@@ -1929,4 +1969,34 @@ test "options.resolve: a custom extension table reaches the bundle" {
         .resolve = .{ .extensions = &.{ ".mts", ".js" } },
     });
     try std.testing.expect(indexOf(code, "const v = 3") != null);
+}
+
+test "a BARE side-effect import of an external survives" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("main.js", "import 'some-polyfill';\nconsole.log('hi');");
+    const code = try s.bundleOf("main.js");
+    // Evaluating the module is the whole point of that syntax: dropping the
+    // import changes what the program does, silently.
+    try std.testing.expect(indexOf(code, "import 'some-polyfill';") != null);
+}
+
+test "a bare external import survives ALONGSIDE named ones" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    try s.write("main.js", "import 'polyfill';\nimport { x } from 'other';\nconsole.log(x);");
+    const code = try s.bundleOf("main.js");
+    try std.testing.expect(indexOf(code, "import 'polyfill';") != null);
+    try std.testing.expect(indexOf(code, "from 'other'") != null);
+}
+
+test "an external whose named imports ALL die still drops out" {
+    var s = try Sandbox.init(std.testing.allocator);
+    defer s.deinit();
+    // `unused` is imported by name and never referenced: nothing is left to
+    // evaluate the module for, so the import goes. The contrast with the two
+    // tests above is the whole rule.
+    try s.write("main.js", "import { unused } from 'dead-dep';\nconsole.log('hi');");
+    const code = try s.bundleOf("main.js");
+    try std.testing.expect(indexOf(code, "dead-dep") == null);
 }

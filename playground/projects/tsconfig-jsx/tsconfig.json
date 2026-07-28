@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    // The one line under test: the JSX runtime must be imported from HERE,
+    // not from the "react" default baked into zcompiler's transform.
+    "jsxImportSource": "preact"
+  }
+}

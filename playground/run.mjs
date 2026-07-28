@@ -94,6 +94,22 @@ function sources(dir) {
  * compiled SEPARATELY by zcompiler, then run by Node. `./x.tsx` specifiers
  * become `./x.js` (Node requires the real extension).
  */
+/**
+ * The `jsxImportSource` this project's tsconfig declares, if any.
+ *
+ * The reference mirror compiles each module with zcompiler directly, and
+ * `jsxTransform` injects `react/jsx-runtime` by default. A project that sets
+ * another source would then have its REFERENCE import react while its BUNDLE
+ * imports preact — a difference in the harness, not in the bundler. The mirror
+ * has to be built with the same compilation settings it is meant to check.
+ */
+function jsxImportSourceOf(dir) {
+  const file = path.join(dir, "tsconfig.json");
+  if (!fs.existsSync(file)) return null;
+  const m = fs.readFileSync(file, "utf8").match(/"jsxImportSource"\s*:\s*"([^"]+)"/);
+  return m ? m[1] : null;
+}
+
 function mirrorCompile(dir) {
   const mirror = path.join(dir, ".reference");
   fs.rmSync(mirror, { recursive: true, force: true });
@@ -108,6 +124,9 @@ function mirrorCompile(dir) {
     else code = src;
     // `from './x.tsx'` -> `from './x.js'`
     code = code.replace(/(['"])(\.\.?\/[^'"]*)\.(tsx|ts|jsx|mjs)\1/g, "$1$2.js$1");
+    // …and the injected JSX runtime follows the tsconfig, like the bundle does.
+    const source = jsxImportSourceOf(dir);
+    if (source) code = code.replace(/(['"])react\/jsx-runtime\1/g, `$1${source}/jsx-runtime$1`);
     const out = path.join(mirror, rel.replace(/\.(tsx|ts|jsx|mjs)$/, ".js"));
     fs.mkdirSync(path.dirname(out), { recursive: true });
     fs.writeFileSync(out, code);

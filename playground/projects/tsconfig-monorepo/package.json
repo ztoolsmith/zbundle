@@ -1,0 +1,7 @@
+{
+  "type": "module",
+  "imports": {
+    "#pkg/a/*": "./pkgs/a/src/*",
+    "#pkg/b/*": "./pkgs/b/src/*"
+  }
+}

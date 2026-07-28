@@ -26,6 +26,15 @@ export type Mode = "development" | "production";
 /** The only output format v1 emits. The type says it, so does the validator. */
 export type Format = "esm";
 
+export interface JsxOptions {
+  /**
+   * What the JSX transform imports its runtime from: `"react"` gives
+   * `react/jsx-runtime`, `"preact"` gives `preact/jsx-runtime`. Defaults to the
+   * tsconfig's `jsxImportSource`, then to `"react"`.
+   */
+  importSource?: string;
+}
+
 export interface ResolveOptions {
   /**
    * Prefix aliases: `{ '@': './src' }` turns `'@/x'` into `'./src/x'`.
@@ -89,6 +98,25 @@ export interface Config {
    * belongs downstairs, not here.
    */
   minify?: boolean;
+  /** JSX settings. Overrides whatever the tsconfig said. */
+  jsx?: JsxOptions;
+  /**
+   * How to use the project's `tsconfig.json`.
+   *
+   *   - omitted (the default) — find the nearest one for every file and read
+   *     `baseUrl`/`paths`, `jsx` and `jsxImportSource` from it;
+   *   - a path — use exactly that file;
+   *   - `false` — ignore tsconfigs entirely.
+   *
+   * Only those three settings are ever read. `target`, `module`, `strict`,
+   * `lib`, `types`, `references`… are ignored **by contract**: zbundle erases
+   * types, it never checks them, and an option it claims to read must change
+   * what it does. Type-checking stays `tsc`'s job.
+   *
+   * Anything written here wins: `resolve.alias` merges OVER the tsconfig
+   * `paths`, and an explicit `jsx.importSource` overrides the tsconfig's.
+   */
+  tsconfig?: string | false;
   /** RESERVED — setting it to `true` is an error that names the target version. */
   sourcemap?: boolean;
   /** RESERVED — setting it to `true` is an error that names the target version. */

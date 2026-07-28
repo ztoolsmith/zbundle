@@ -1,0 +1,8 @@
+{
+  // The paths live HERE, so they are relative to THIS file — one level down.
+  // Resolving them against the extending tsconfig instead is the classic bug,
+  // and `../src/*` only works if that is done right.
+  "compilerOptions": {
+    "paths": { "#app/*": ["../src/*"] }
+  }
+}

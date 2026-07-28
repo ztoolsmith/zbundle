@@ -4,6 +4,85 @@ All notable changes to zbundle. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.0] — 2026-07-27
+
+**`tsconfig.json` support.** zbundle now takes resolution and JSX settings from
+the project's tsconfig, like rolldown and esbuild — as a STRIPPER does, which
+means a short and closed list.
+
+### Added
+
+- **`baseUrl` + `paths` become resolution aliases.** A wildcard entry
+  (`"@/*": ["./src/*"]`) is a prefix; an entry without one (`"jquery":
+  ["./vendor/jq.js"]`) is an **exact** mapping, so it cannot swallow
+  `jquery-ui`.
+
+- **Per FILE, not per build.** Each tsconfig produces aliases scoped to its own
+  directory, and the nearest scope wins. Two packages of a monorepo can map the
+  same `#own/` to their own `src` — something a single global alias table cannot
+  express.
+
+- **`jsxImportSource` is honoured.** It was never wired: the JSX transform always
+  imported from `react`, whatever the tsconfig said.
+
+- **`tsconfig: string | false`** in the config — force a file, or ignore
+  tsconfigs entirely. Omitted means auto-detection.
+
+- **`jsx.importSource`** in the config, which overrides the tsconfig's.
+
+- **JSONC is parsed properly** — comments and trailing commas, which every real
+  tsconfig has. A hand-written parser, not a comment-stripping regex: `"http://x"`
+  inside a string must keep its tail. Errors carry `file:line:column`.
+
+- **`extends` chains** are resolved (relative, directory, npm package), merged
+  child-first, with a circular chain reported as the loop it is. Each value is
+  resolved against the file that DECLARED it — `paths` in an extended config are
+  relative to that config, not to the one at the end of the chain.
+
+### The closed list
+
+`baseUrl`/`paths`, `jsx`, `jsxImportSource`. **Everything else is ignored on
+purpose**: `target`/`module` (there is no downleveling), `strict`/`lib`/`types`
+(that is `tsc`'s job), `allowJs`/`checkJs`, `references`/`composite`. An option
+zbundle claimed to read would have to change what it does.
+
+`"jsx": "preserve"` is refused — and always will be: zbundle emits JavaScript,
+and preserving JSX would mean emitting something another tool still has to
+compile. `"jsx": "react"` (the classic runtime) is not refused but **warned
+about**: zbundle always compiles with the automatic runtime, so the output
+differs from what `tsc` would emit.
+
+**Anything written in `zbundle.config.ts` wins**: `resolve.alias` merges over
+the tsconfig `paths`, and `jsx.importSource` overrides `jsxImportSource`.
+
+Multiple `paths` targets (`["./a/*", "./b/*"]`) keep the **first**, and say so:
+real fallback would mean trying each target in turn, which is resolution state
+the resolver does not carry.
+
+### Fixed
+
+- **A bare side-effect import of an external was silently dropped.**
+  `import 'some-polyfill'` declares no binding, so nothing registered it, and it
+  vanished from the bundle — while evaluating the module is the entire point of
+  that syntax. Internal ones (`import './polyfill'`) were always kept; only
+  externals were affected. An external whose named imports all die still drops
+  out, which is the correct contrast.
+
+### Changed
+
+- The reserved options move one version along, now that v0.3 is taken:
+  `sourcemap` v0.4, `watch` v0.5, `chunkFileNames`/`assetFileNames` v0.6.
+
+### Verified
+
+93 Zig tests (+9), 142 Node tests (+16), **25/25** in the playground judge — four
+new projects, and the twenty-one existing ones unchanged. The new ones are built
+through the command, config file included: `tsconfig-paths` (the twin of
+`config-alias`, with no `resolve.alias` anywhere), `tsconfig-extends` (a
+two-level chain), `tsconfig-jsx` (a **preact** shim, so the import source proves
+something), and `tsconfig-monorepo` (two packages, the same key, different
+answers — a broken scope shows up immediately).
+
 ## [0.2.3] — 2026-07-27
 
 The rule this project applies to config options — **an option that is accepted

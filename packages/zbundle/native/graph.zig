@@ -109,6 +109,17 @@ pub const Error = error{ BuildFailed, OutOfMemory };
 /// What `build` returns: the graph (serializable) plus the ASTs (Zig side).
 pub const Built = struct { graph: Graph, parsed: []const Parsed };
 
+/// What the build layer changes about graph construction.
+///
+/// `resolve` is resolution (extensions, aliases). `jsx_import_source` is
+/// COMPILATION — it is the `jsxImportSource` a tsconfig declares, and it decides
+/// what the JSX transform imports from. Two different concerns, so two fields
+/// rather than one overloaded struct.
+pub const Options = struct {
+    resolve: resolver.Config = .{},
+    jsx_import_source: []const u8 = "react",
+};
+
 /// Builds the graph from `entry` (a path, relative to the cwd or absolute).
 ///
 /// **Breadth-first** traversal (FIFO queue): every discovered module gets an id
@@ -123,10 +134,10 @@ pub const Built = struct { graph: Graph, parsed: []const Parsed };
 /// `cfg` is what the build layer is allowed to change about resolution (the
 /// extension table, the aliases). `.{}` = the historical behaviour, so every
 /// existing caller and test keeps its exact meaning.
-pub fn build(a: Allocator, io: Io, entry: []const u8, cfg: resolver.Config, err: *BuildError) Error!Built {
+pub fn build(a: Allocator, io: Io, entry: []const u8, opts: Options, err: *BuildError) Error!Built {
     const t0 = Io.Clock.awake.now(io).nanoseconds;
 
-    var b = Builder{ .a = a, .io = io, .cfg = cfg, .err = err };
+    var b = Builder{ .a = a, .io = io, .opts = opts, .err = err };
     // The entry is made ABSOLUTE first: `std.fs.path.resolve` is purely lexical
     // in Zig 0.16 (it does not know the cwd), so without this a relative entry
     // would stay relative in error messages.
@@ -175,8 +186,8 @@ fn absolute(a: Allocator, io: Io, path: []const u8) Allocator.Error![]const u8 {
 const Builder = struct {
     a: Allocator,
     io: Io,
-    /// The resolution knobs, carried down to every `resolver.resolve` call.
-    cfg: resolver.Config,
+    /// The build knobs, carried down to resolution and to the JSX transform.
+    opts: Options,
     err: *BuildError,
     modules: std.ArrayList(Module) = .empty,
     /// Parallel to `modules`: each one's normalized AST, kept for the linker.
@@ -193,7 +204,7 @@ const Builder = struct {
     /// it if new). `error.BuildFailed` if a relative specifier does not resolve.
     fn resolveAndIntern(self: *Builder, from_dir: []const u8, specifier: []const u8, importer: []const u8) Error!ModuleId {
         var diag: resolver.Diagnostic = .{};
-        const r = resolver.resolve(self.a, self.io, from_dir, specifier, self.cfg, &diag) catch |e| switch (e) {
+        const r = resolver.resolve(self.a, self.io, from_dir, specifier, self.opts.resolve, &diag) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             error.NotFound => {
                 self.err.message = try resolver.formatError(self.a, diag, importer);
@@ -255,7 +266,7 @@ const Builder = struct {
         //      reference `jsx` without importing it.
         // The order (strip THEN jsx) is the one zcompiler's own harness uses.
         if (f.ts) zc.transformer.stripTypes(parsed.program, src, self.a);
-        if (f.jsx) _ = zc.jsx_transform.transform(parsed.program, src, self.a, .{});
+        if (f.jsx) _ = zc.jsx_transform.transform(parsed.program, src, self.a, .{ .import_source = self.opts.jsx_import_source });
         self.parsed.items[id] = .{ .source = src, .program = parsed.program };
 
         const dir = std.fs.path.dirname(mod.path) orelse ".";
@@ -280,7 +291,7 @@ const Builder = struct {
             .name = rec.name,
             .attributes = @ptrCast(rec.attributes),
         };
-        if (resolver.isExternal(self.cfg, rec.specifier)) {
+        if (resolver.isExternal(self.opts.resolve, dir, rec.specifier)) {
             edge.external = try self.internExternal(rec.specifier);
         } else {
             edge.to = try self.resolveAndIntern(dir, rec.specifier, importer);
@@ -580,7 +591,7 @@ const Sandbox = struct {
     fn graphCfg(self: *Sandbox, entry: []const u8, cfg: resolver.Config) !Graph {
         var err: BuildError = .{};
         const full = try std.fs.path.join(self.a(), &.{ self.root, entry });
-        const built = build(self.a(), io, full, cfg, &err) catch |e| {
+        const built = build(self.a(), io, full, .{ .resolve = cfg }, &err) catch |e| {
             std.debug.print("build failed: {s}\n", .{err.message});
             return e;
         };

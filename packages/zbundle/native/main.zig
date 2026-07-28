@@ -20,7 +20,7 @@ const Allocator = std.mem.Allocator;
 
 /// zbundle's version (mirrors `package.json`). A **module constant** — zignapi
 /// registers non-function values as they are.
-pub const VERSION = "0.2.3";
+pub const VERSION = "0.3.0";
 
 /// The `Io` for one call (Zig 0.16: all disk access goes through this
 /// interface). The single-threaded variant starts no worker and allocates
@@ -42,6 +42,26 @@ fn graphImpl(a: Allocator, entry: []const u8) !graph.Graph {
     // `.{}` = the default resolution. ONE crossing was specified, and it is
     // `bundleWith`; `graph`/`resolve` stay the raw, unconfigured probes.
     const built = graph.build(a, blockingIo(&t), entry, .{}, &err) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        error.BuildFailed => return zignapi.fail(err.message),
+    };
+    return built.graph;
+}
+
+/// graphWith(entryPath, { resolve, jsxImportSource }) -> the same graph as
+/// `graph`, but resolved with the build's own knobs.
+///
+/// The config layer needs this to find every module BEFORE it can know which
+/// `tsconfig.json` governs each of them — the discovery pass. `graph` keeps its
+/// one-argument shape: it is the raw probe, and every existing caller of it
+/// stays valid.
+fn graphWith(a: Allocator, entry: []const u8, opts: JsOptions) !graph.Graph {
+    var t: std.Io.Threaded = undefined;
+    var err: graph.BuildError = .{};
+    const built = graph.build(a, blockingIo(&t), entry, .{
+        .resolve = opts.resolve,
+        .jsx_import_source = opts.jsx_import_source,
+    }, &err) catch |e| switch (e) {
         error.OutOfMemory => return e,
         error.BuildFailed => return zignapi.fail(err.message),
     };
@@ -132,6 +152,9 @@ const JsOptions = struct {
     /// zcompiler's printer — that belongs downstairs, not here.
     minify: bool = false,
     resolve: resolver.Config = .{},
+    /// `jsxImportSource` — `"react"` -> `react/jsx-runtime`, `"preact"` ->
+    /// `preact/jsx-runtime`. Read from the tsconfig, overridable by the config.
+    jsx_import_source: []const u8 = "react",
 };
 
 /// bundleWith(entryPath, { format, dead, minify, resolve }) -> { code, stats, dead }.
@@ -154,6 +177,7 @@ fn bundleWith(a: Allocator, entry: []const u8, opts: JsOptions) !linker.Report {
         .format = format,
         .minify = opts.minify,
         .resolve = opts.resolve,
+        .jsx_import_source = opts.jsx_import_source,
     };
     return linker.bundleReport(a, blockingIo(&t), entry, &err, opts.dead, options) catch |e| switch (e) {
         error.OutOfMemory => return e,
@@ -186,6 +210,7 @@ fn bundlePrint(a: Allocator, entry: []const u8) ![]const u8 {
 comptime {
     zignapi.register(.{
         .graph = graphImpl,
+        .graphWith = graphWith,
         .graphPrint = graphPrint,
         .resolve = resolveImpl,
         .bundle = bundleImpl,

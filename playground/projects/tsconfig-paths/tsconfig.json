@@ -1,0 +1,11 @@
+{
+  // The SAME mapping Node reads from `imports` above — declared the TypeScript
+  // way. zbundle must reach the same modules from it, with no `resolve.alias`
+  // anywhere in the zbundle config.
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "#lib/*": ["./src/*"],
+    },
+  },
+}

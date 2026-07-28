@@ -25,6 +25,8 @@ CLAUDE.md
 # retrouverait sans lui : le projet ts-jsx echouerait sur un clone frais.
 !/playground/projects/ts-jsx/node_modules/
 !/playground/projects/ts-jsx/node_modules/**
+!/playground/projects/tsconfig-jsx/node_modules/
+!/playground/projects/tsconfig-jsx/node_modules/**
 
 # Artefacts du playground (bundles générés + miroirs de référence)
 /playground/projects/*/.bundle.mjs

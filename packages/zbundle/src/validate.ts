@@ -18,6 +18,7 @@ import {
   type Mode,
 } from "./config.js";
 import { ConfigError } from "./load.js";
+import type { ScopedAlias } from "./tsconfig.js";
 
 export { ConfigError };
 
@@ -31,14 +32,23 @@ export interface ResolvedEntry {
 /** A config with every default applied and every path made absolute. */
 export interface ResolvedConfig {
   mode: Mode;
+  /**
+   * The config file's directory — the project root as this build understands it.
+   * Every relative path was resolved against it, and it bounds the tsconfig scan.
+   */
+  root: string;
   entries: ResolvedEntry[];
   outDir: string;
   entryFileNames: string;
   clean: boolean;
   minify: boolean;
   /** Already absolute — see {@link ResolveOptions.alias}. */
-  alias: { from: string; to: string }[];
+  alias: ScopedAlias[];
   extensions: string[];
+  /** `false` = ignore tsconfigs; a path = use that one; `"auto"` = discover. */
+  tsconfig: string | false | "auto";
+  /** Set only when the CONFIG says so — it then wins over any tsconfig. */
+  jsxImportSource?: string;
 }
 
 /**
@@ -47,10 +57,10 @@ export interface ResolvedConfig {
  * not in an issue tracker you have to go find.
  */
 const RESERVED: Record<string, { what: string; version: string }> = {
-  sourcemap: { what: "sourcemap", version: "v0.3" },
-  watch: { what: "watch", version: "v0.4" },
-  "output.chunkFileNames": { what: "output.chunkFileNames", version: "v0.5" },
-  "output.assetFileNames": { what: "output.assetFileNames", version: "v0.5" },
+  sourcemap: { what: "sourcemap", version: "v0.4" },
+  watch: { what: "watch", version: "v0.5" },
+  "output.chunkFileNames": { what: "output.chunkFileNames", version: "v0.6" },
+  "output.assetFileNames": { what: "output.assetFileNames", version: "v0.6" },
 };
 
 /**
@@ -65,7 +75,8 @@ const RESERVED_ON_PRESENCE = new Set(["output.chunkFileNames", "output.assetFile
 
 const ISSUES = "https://github.com/ztoolsmith/zbundle/issues";
 
-const TOP_KEYS = ["mode", "input", "output", "resolve", "minify", "sourcemap", "watch"];
+const TOP_KEYS = ["mode", "input", "output", "resolve", "minify", "jsx", "tsconfig", "sourcemap", "watch"];
+const JSX_KEYS = ["importSource"];
 const OUTPUT_KEYS = ["dir", "format", "entryFileNames", "clean", "chunkFileNames", "assetFileNames"];
 const RESOLVE_KEYS = ["alias", "extensions"];
 
@@ -200,7 +211,7 @@ export function validate(
     if (o.format !== undefined && o.format !== "esm") {
       throw new ConfigError(
         `output.format: ${JSON.stringify(o.format)} — only "esm" is supported in v1.\n` +
-          `  "iife" exists on the command line (\`zbundle <entry> -f iife\`); "cjs"/"umd" are planned for v0.5.\n` +
+          `  "iife" exists on the command line (\`zbundle <entry> -f iife\`); "cjs"/"umd" are planned for v0.6.\n` +
           `  Follow ${ISSUES}`,
       );
     }
@@ -227,7 +238,7 @@ export function validate(
   }
 
   // ---- resolve ----
-  const alias: { from: string; to: string }[] = [];
+  const alias: ScopedAlias[] = [];
   let extensions = [...DEFAULT_EXTENSIONS];
   if (c.resolve !== undefined) {
     if (!isPlainObject(c.resolve)) wrongType("resolve", c.resolve, "object");
@@ -245,7 +256,9 @@ export function validate(
         // turns `#lib/x.js` into `srcx.js`. The user's trailing separator is
         // part of what they wrote, so it is preserved.
         const keepsSlash = /[\\/]$/.test(to) && !/[\\/]$/.test(abs);
-        alias.push({ from, to: keepsSlash ? abs + sep : abs });
+        // An explicit alias governs the WHOLE build (empty scope) and is a
+        // prefix rule — that is what `resolve.alias` has always meant.
+        alias.push({ from, to: keepsSlash ? abs + sep : abs, exact: false, scope: "" });
       }
     }
     if (r.extensions !== undefined) {
@@ -270,6 +283,33 @@ export function validate(
     minify = c.minify;
   }
 
+  // ---- tsconfig ----
+  let tsconfig: string | false | "auto" = "auto";
+  if (c.tsconfig !== undefined) {
+    if (c.tsconfig === false) tsconfig = false;
+    else if (typeof c.tsconfig === "string") {
+      if (c.tsconfig === "") throw new ConfigError(`tsconfig: cannot be empty — use false to disable it`);
+      tsconfig = isAbsolute(c.tsconfig) ? c.tsconfig : resolvePath(configDir, c.tsconfig);
+    } else if (c.tsconfig === true) {
+      throw new ConfigError(
+        `tsconfig: true is not a value — omit the key for auto-detection, or give a path`,
+      );
+    } else wrongType("tsconfig", c.tsconfig, "string | false");
+  }
+
+  // ---- jsx ----
+  let jsxImportSource: string | undefined;
+  if (c.jsx !== undefined) {
+    if (!isPlainObject(c.jsx)) wrongType("jsx", c.jsx, "object");
+    checkKeys(c.jsx, JSX_KEYS, "jsx", warnings);
+    const j = c.jsx as Record<string, unknown>;
+    if (j.importSource !== undefined) {
+      if (typeof j.importSource !== "string") wrongType("jsx.importSource", j.importSource, "string");
+      if (j.importSource === "") throw new ConfigError(`jsx.importSource: cannot be empty`);
+      jsxImportSource = j.importSource;
+    }
+  }
+
   // ---- the reserved booleans ----
   // `false` is the current behaviour, so it is accepted; only asking for the
   // feature is refused.
@@ -280,7 +320,10 @@ export function validate(
   if (c.watch === true) reserved("watch");
   if (c.watch !== undefined && typeof c.watch !== "boolean") wrongType("watch", c.watch, "boolean");
 
-  return { config: { mode, entries, outDir, entryFileNames, clean, minify, alias, extensions }, warnings };
+  return {
+    config: { mode, root: configDir, entries, outDir, entryFileNames, clean, minify, alias, extensions, tsconfig, jsxImportSource },
+    warnings,
+  };
 }
 
 /** `[name]` is the only placeholder; anything else is a typo we must not eat. */
@@ -289,7 +332,7 @@ function checkPlaceholders(pattern: string): void {
     if (m[1] !== "name") {
       throw new ConfigError(
         `output.entryFileNames: unknown placeholder [${m[1]}] — only [name] exists in v1\n` +
-          `  [hash]/[format] are planned alongside code splitting (v0.5). Follow ${ISSUES}`,
+          `  [hash]/[format] are planned alongside code splitting (v0.6). Follow ${ISSUES}`,
       );
     }
   }

@@ -24,7 +24,7 @@ import { bundleWith, graphPrint, VERSION } from "../index.js";
 import { DEFAULT_EXTENSIONS } from "./config.js";
 import { findConfigFile, loadConfigModule, ConfigError, CONFIG_NAMES } from "./load.js";
 import { validate, type ResolvedConfig } from "./validate.js";
-import { runBuild, type BuildResult, type Dead, type Stats } from "./build.js";
+import { runBuild, readTsconfigs, type BuildResult, type Dead, type Stats } from "./build.js";
 
 const HELP = `zbundle — a JavaScript/TypeScript bundler written in Zig
 
@@ -254,7 +254,7 @@ async function runBuildCommand(
     {
       flag: "--watch",
       key: "watch",
-      why: "reserved — planned for v0.4. Follow https://github.com/ztoolsmith/zbundle/issues\n" +
+      why: "reserved — planned for v0.5. Follow https://github.com/ztoolsmith/zbundle/issues\n" +
         "  The one-shot form has an interim watch: zbundle <entry> --watch -o <file>",
     },
   ]);
@@ -272,7 +272,10 @@ async function runBuildCommand(
   for (const w of warnings) process.stderr.write(`${yellow("⚠")} ${w}\n`);
   if (!values.quiet && configFile) process.stderr.write(dim(`— ${short(configFile)}\n`));
 
-  const results = runBuild(config, values.dead === true);
+  const ts = readTsconfigs(config);
+  for (const w of ts.warnings) process.stderr.write(`${yellow("⚠")} ${w}\n`);
+
+  const results = runBuild(config, values.dead === true, ts);
   reportBuild(results, config, values.quiet === true);
   if (values.dead === true) {
     for (const r of results) {
@@ -299,7 +302,11 @@ function buildOnce(
     format: opts.format,
     dead: opts.dead,
     minify: opts.minify,
+    // The one-shot form reads no config, so it reads no tsconfig either: it is
+    // the "just this file, with the defaults" path, and staying predictable is
+    // the whole point of it.
     resolve: { alias: [], extensions: [...DEFAULT_EXTENSIONS] },
+    jsx_import_source: "react",
   }) as { code: string; stats: Stats; dead: Dead[] };
 
   if (opts.out) writeFileSync(opts.out, result.code);

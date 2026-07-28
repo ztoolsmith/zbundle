@@ -4,12 +4,13 @@
 //! creating directories, emptying one. Not a single line looks inside a module:
 //! that is the addon's job, and this file calls it once per entry.
 
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 
 import { bundleWith } from "../index.js";
 import { ConfigError, type ResolvedConfig } from "./validate.js";
+import { translate, type ScopedAlias, type TsconfigInfo } from "./tsconfig.js";
 
 /** The shorter of absolute and cwd-relative — an error message is read, not parsed. */
 function short(p: string): string {
@@ -128,6 +129,126 @@ function planOutputs(cfg: ResolvedConfig): { name: string; file: string; outFile
   return plan;
 }
 
+/** Directories a tsconfig scan has no business entering. */
+const SKIP_DIRS = new Set(["node_modules", "dist", "build", "out", "coverage", ".git"]);
+
+/**
+ * Every `tsconfig.json` that could govern a module of this build.
+ *
+ * **Why a directory scan rather than a graph pass.** The honest requirement is
+ * "the nearest tsconfig of every FILE", and the file set only exists inside the
+ * Zig graph. Building the graph first to learn it does not work: in the very
+ * case that motivates per-file configs — a monorepo — the graph cannot be built
+ * until the second package's `paths` are known, so the discovery pass would fail
+ * on exactly what it was meant to discover.
+ *
+ * Scanning is complete instead, and cheap: it reads directory entries, never
+ * module contents, and stops at `node_modules` and build outputs. Combined with
+ * SCOPED aliases (each tsconfig governs its own directory, nearest scope wins in
+ * `resolver.zig`), per-file resolution falls out with no extra parse.
+ */
+function collectTsconfigFiles(root: string, entries: { file: string }[], outDir: string): string[] {
+  const found = new Set<string>();
+  const roots = new Set<string>();
+
+  // Upwards from every entry: configs ABOVE the project still govern it.
+  for (const { file } of entries) {
+    let dir = dirname(file);
+    for (;;) {
+      const candidate = join(dir, "tsconfig.json");
+      if (existsSync(candidate)) found.add(resolve(candidate));
+      roots.add(dir);
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+
+  // Downwards from the PROJECT ROOT — the config file's directory. Starting at
+  // an entry's own directory was the first attempt and it misses the case that
+  // matters: in a monorepo, `pkgs/b/tsconfig.json` is a SIBLING of the entry's
+  // package, neither above it nor below it.
+  const outAbs = resolve(outDir);
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 8 || resolve(dir) === outAbs) return;
+    let items;
+    try {
+      items = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return; // unreadable directory: not our problem to report
+    }
+    for (const item of items) {
+      if (!item.isDirectory()) continue;
+      if (item.name.startsWith(".") || SKIP_DIRS.has(item.name)) continue;
+      const sub = join(dir, item.name);
+      const candidate = join(sub, "tsconfig.json");
+      if (existsSync(candidate)) found.add(resolve(candidate));
+      walk(sub, depth + 1);
+    }
+  };
+  walk(root, 0);
+
+  return [...found];
+}
+
+/** What the tsconfigs contribute, merged and ready for the addon. */
+export interface TsconfigContribution {
+  aliases: ScopedAlias[];
+  jsxImportSource?: string;
+  warnings: string[];
+}
+
+/**
+ * Reads the tsconfigs and turns them into aliases.
+ *
+ * **The priority rule, applied here in one place: what the zbundle config says
+ * WINS.** A tsconfig alias whose key is also declared in `resolve.alias` is
+ * dropped — the user who wrote it in `zbundle.config.ts` knew what they were
+ * doing. Same for `jsx.importSource`.
+ */
+export function readTsconfigs(cfg: ResolvedConfig): TsconfigContribution {
+  if (cfg.tsconfig === false) return { aliases: [], warnings: [] };
+
+  // `"auto"` is the sentinel, not a path — `typeof === "string"` is true for
+  // both, and forgetting that made every build look for a file called "auto".
+  const forcedFile = cfg.tsconfig !== "auto" && typeof cfg.tsconfig === "string" ? cfg.tsconfig : null;
+  const files = forcedFile !== null ? [forcedFile] : collectTsconfigFiles(cfg.root, cfg.entries, cfg.outDir);
+  if (files.length === 0) return { aliases: [], warnings: [] };
+
+  const infos: TsconfigInfo[] = [];
+  for (const file of files) {
+    if (!existsSync(file)) {
+      throw new ConfigError(`tsconfig: not found: ${short(file)}`);
+    }
+    infos.push(translate(file));
+  }
+
+  const warnings = infos.flatMap((i) => i.warnings);
+  // An explicitly named tsconfig governs the whole build, not just its own
+  // directory: naming it IS saying "use this one for everything".
+  const forced = forcedFile !== null;
+  const explicitKeys = new Set(cfg.alias.map((a) => a.from));
+  const aliases: ScopedAlias[] = [];
+  for (const info of infos) {
+    for (const alias of info.aliases) {
+      if (explicitKeys.has(alias.from)) continue; // resolve.alias wins
+      aliases.push(forced ? { ...alias, scope: "" } : alias);
+    }
+  }
+
+  // `jsxImportSource` is one value for the whole build. The nearest tsconfig to
+  // the first entry decides; a disagreement is said out loud rather than picked
+  // silently.
+  const sources = [...new Set(infos.map((i) => i.jsxImportSource).filter((v): v is string => !!v))];
+  if (sources.length > 1) {
+    warnings.push(
+      `tsconfig: several jsxImportSource values (${sources.map((s) => JSON.stringify(s)).join(", ")}); ` +
+        `zbundle uses ${JSON.stringify(sources[0])} for the whole build`,
+    );
+  }
+  return { aliases, jsxImportSource: sources[0], warnings };
+}
+
 /**
  * Runs the whole build: one INDEPENDENT bundle per entry.
  *
@@ -135,7 +256,11 @@ function planOutputs(cfg: ResolvedConfig): { name: string; file: string; outFile
  * copy of it. Factoring it out means emitting a shared chunk, which is code
  * splitting — a chantier of its own, not something to fake here.
  */
-export function runBuild(cfg: ResolvedConfig, withDead = false): BuildResult[] {
+export function runBuild(
+  cfg: ResolvedConfig,
+  withDead = false,
+  ts: TsconfigContribution = { aliases: [], warnings: [] },
+): BuildResult[] {
   for (const e of cfg.entries) {
     if (!existsSync(e.file)) {
       throw new ConfigError(`input: entry not found: ${e.file}`);
@@ -164,7 +289,10 @@ export function runBuild(cfg: ResolvedConfig, withDead = false): BuildResult[] {
       format: "esm",
       dead: withDead,
       minify: cfg.minify,
-      resolve: { alias: cfg.alias, extensions: cfg.extensions },
+      // The explicit aliases come FIRST; ties are already impossible (the
+      // tsconfig ones colliding by key were dropped in `readTsconfigs`).
+      resolve: { alias: [...cfg.alias, ...ts.aliases], extensions: cfg.extensions },
+      jsx_import_source: cfg.jsxImportSource ?? ts.jsxImportSource ?? "react",
     }) as { code: string; stats: Stats; dead: Dead[] };
 
     mkdirSync(dirname(outFile), { recursive: true });
