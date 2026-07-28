@@ -17,6 +17,9 @@ importers:
 
   packages/zbundle:
     devDependencies:
+      source-map:
+        specifier: ^0.8.0
+        version: 0.8.0
       zignapi:
         specifier: 0.4.1
         version: 0.4.1
@@ -29,11 +32,19 @@ importers:
       zcompiler:
         specifier: link:../../zcompiler/packages/zcompiler
         version: link:../../zcompiler/packages/zcompiler
+    devDependencies:
+      source-map:
+        specifier: ^0.8.0
+        version: 0.8.0
 
 packages:
 
   '@types/node@22.20.1':
     resolution: {integrity: sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==}
+
+  source-map@0.8.0:
+    resolution: {integrity: sha512-d8EqvL+k/SOXCreS/SUzg2ciyHqBBLcN/yuRjFsbvVhHTE2pgei7oAhmPM7kWFbkX6OSMQfUq4KbkF3au9lhYQ==}
+    engines: {node: '>= 12'}
 
   typescript@5.9.3:
     resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
@@ -53,6 +64,8 @@ snapshots:
   '@types/node@22.20.1':
     dependencies:
       undici-types: 6.21.0
+
+  source-map@0.8.0: {}
 
   typescript@5.9.3: {}
 

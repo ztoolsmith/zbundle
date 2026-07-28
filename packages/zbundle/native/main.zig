@@ -20,7 +20,7 @@ const Allocator = std.mem.Allocator;
 
 /// zbundle's version (mirrors `package.json`). A **module constant** — zignapi
 /// registers non-function values as they are.
-pub const VERSION = "0.3.0";
+pub const VERSION = "0.4.0";
 
 /// The `Io` for one call (Zig 0.16: all disk access goes through this
 /// interface). The single-threaded variant starts no worker and allocates
@@ -155,6 +155,8 @@ const JsOptions = struct {
     /// `jsxImportSource` — `"react"` -> `react/jsx-runtime`, `"preact"` ->
     /// `preact/jsx-runtime`. Read from the tsconfig, overridable by the config.
     jsx_import_source: []const u8 = "react",
+    /// Return the position of every emitted node, for a source map.
+    sourcemap: bool = false,
 };
 
 /// bundleWith(entryPath, { format, dead, minify, resolve }) -> { code, stats, dead }.
@@ -178,6 +180,7 @@ fn bundleWith(a: Allocator, entry: []const u8, opts: JsOptions) !linker.Report {
         .minify = opts.minify,
         .resolve = opts.resolve,
         .jsx_import_source = opts.jsx_import_source,
+        .sourcemap = opts.sourcemap,
     };
     return linker.bundleReport(a, blockingIo(&t), entry, &err, opts.dead, options) catch |e| switch (e) {
         error.OutOfMemory => return e,

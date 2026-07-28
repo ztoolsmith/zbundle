@@ -21,7 +21,7 @@ import { dirname, resolve, relative } from "node:path";
 import process from "node:process";
 
 import { bundleWith, graphPrint, VERSION } from "../index.js";
-import { DEFAULT_EXTENSIONS } from "./config.js";
+import { DEFAULT_EXTENSIONS, type SourcemapMode } from "./config.js";
 import { findConfigFile, loadConfigModule, ConfigError, CONFIG_NAMES } from "./load.js";
 import { validate, type ResolvedConfig } from "./validate.js";
 import { runBuild, readTsconfigs, type BuildResult, type Dead, type Stats } from "./build.js";
@@ -40,6 +40,7 @@ Build options:
   -c, --config <file>   Config file (default: zbundle.config.{ts,mts,js,mjs,cjs})
       --out-dir <dir>   Override output.dir
       --dead            List removed code, per bundle
+      --sourcemap[=m]   Emit a source map: true (default) | inline | hidden
 
 Shared:
       --minify          Override minify (default: mode === "production")
@@ -133,6 +134,7 @@ function reportDead(dead: Dead[]): void {
 interface Overrides {
   outDir?: string;
   minify?: boolean;
+  sourcemap?: SourcemapMode;
 }
 
 /**
@@ -183,7 +185,20 @@ function applyOverrides(config: ResolvedConfig, over: Overrides, cwd: string): R
     ...config,
     outDir: over.outDir !== undefined ? resolve(cwd, over.outDir) : config.outDir,
     minify: over.minify !== undefined ? over.minify : config.minify,
+    sourcemap: over.sourcemap !== undefined ? over.sourcemap : config.sourcemap,
   };
+}
+
+/**
+ * `--sourcemap` with no value means `true`; `=inline` / `=hidden` name a mode.
+ * Anything else is refused rather than quietly treated as `true`.
+ */
+function readSourcemapFlag(v: string | undefined): SourcemapMode | undefined {
+  if (v === undefined) return undefined;
+  if (v === "" || v === "true") return true;
+  if (v === "false") return false;
+  if (v === "inline" || v === "hidden") return v;
+  fail(`--sourcemap: unknown mode ${JSON.stringify(v)} (expected: inline, hidden, true, false)`);
 }
 
 /** One aligned line per bundle, then the totals. */
@@ -265,6 +280,7 @@ async function runBuildCommand(
     {
       outDir: values["out-dir"] as string | undefined,
       minify: values.minify as boolean | undefined,
+      sourcemap: readSourcemapFlag(values.sourcemap as string | undefined),
     },
   );
 
@@ -307,6 +323,7 @@ function buildOnce(
     // the whole point of it.
     resolve: { alias: [], extensions: [...DEFAULT_EXTENSIONS] },
     jsx_import_source: "react",
+    sourcemap: false,
   }) as { code: string; stats: Stats; dead: Dead[] };
 
   if (opts.out) writeFileSync(opts.out, result.code);
@@ -409,8 +426,13 @@ function runOneShot(positional: string, values: Record<string, unknown>): void {
 // ──────────────────────────────────── main ───────────────────────────────────
 
 async function main(): Promise<void> {
+  // `--sourcemap` takes an optional value, which `parseArgs` cannot express: a
+  // string option always demands one. A bare flag is rewritten to `=true` so
+  // both `--sourcemap` and `--sourcemap=inline` work, and nothing else changes.
+  const argv = process.argv.slice(2).map((a) => (a === "--sourcemap" ? "--sourcemap=true" : a));
+
   const { values, positionals } = parseArgs({
-    args: process.argv.slice(2),
+    args: argv,
     allowPositionals: true,
     options: {
       // build
@@ -419,6 +441,8 @@ async function main(): Promise<void> {
       // `minify` gets NO default: absent must stay distinguishable from
       // `--minify false`, otherwise the CLI would always override the config.
       minify: { type: "boolean" },
+      // A string so `--sourcemap=inline` works; bare `--sourcemap` yields "".
+      sourcemap: { type: "string" },
       // one-shot
       out: { type: "string", short: "o" },
       format: { type: "string", short: "f" },

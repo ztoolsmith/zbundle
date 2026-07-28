@@ -166,12 +166,6 @@ function resolveExtends(spec: string, from: string): string {
 }
 
 /**
- * Turns a resolved tsconfig into what the rest of the build understands.
- *
- * Every path is made absolute here, against the directory of the tsconfig that
- * DECLARED it — not the cwd, not the importing file.
- */
-/**
  * The canonical form of a path, when it exists.
  *
  * **The scope has to be canonical.** `resolver.zig` compares it against the
@@ -189,6 +183,12 @@ function canonical(p: string): string {
   }
 }
 
+/**
+ * Turns a resolved tsconfig into what the rest of the build understands.
+ *
+ * Every path is made absolute here, against the directory of the tsconfig that
+ * DECLARED it — not the cwd, not the importing file.
+ */
 export function translate(file: string): TsconfigInfo {
   const opts = readChain(file);
   const scope = canonical(dirname(resolvePath(file)));

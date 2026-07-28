@@ -4,6 +4,61 @@ All notable changes to zbundle. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/).
 
+## [0.4.0] — 2026-07-28
+
+**Source maps.** A position in the bundle points back at the exact character of
+the original `.ts` — through type stripping, JSX lowering, scope hoisting and
+cross-module renaming.
+
+### Added
+
+- **`sourcemap: false | true | 'inline' | 'hidden'`**, and `--sourcemap[=mode]`
+  on the command line (CLI wins over the config). `true` writes a `.js.map` and
+  the `sourceMappingURL` comment; `inline` embeds a base64 data URL; `hidden`
+  writes the map and says nothing, for setups that upload it out of band;
+  `false` is the default and costs **not one byte**.
+- `sourcesContent` is embedded, so debugging needs no access to the source tree.
+- **In zcompiler**: the printer can now emit a stream of `(output offset ->
+  source offset)` alongside the text. Three `*With` variants; the historical
+  functions delegate with an empty sink and stay byte-identical.
+
+### Lifts
+
+- **`sourcemap` is no longer a reserved option.** The refusal was removed in the
+  same change that delivered the feature, and the judge gained the cases that
+  exercise it.
+
+### Details
+
+- **Renaming does not move a position.** A binding renamed by the linker
+  (`shared$1`) keeps its NODE — only the text changes — so the mapping still
+  points at the identifier that was written. That falls out of the design rather
+  than being arranged.
+- **Synthetic nodes are not mapped.** The `import` that the JSX transform
+  injects, an `enum` IIFE: nothing in the source produced them, and pointing at
+  byte 0 would be worse than pointing nowhere. Omitting the segment is also the
+  right answer — a segment holds until the next one, so synthetic output is
+  attributed to the enclosing statement. A folded literal is the exception: the
+  transformer gives it the span of the expression it replaced, so `7` maps back
+  to `1 + 2 * 3`.
+- **Bytes are not columns.** Zig counts bytes, a source map counts UTF-16 code
+  units, and the bundle banner alone (`—`, `──`) drifts ten units before the
+  first statement. Every conversion decodes the UTF-8 instead of assuming.
+- `names` is empty: it is what shows a debugger the ORIGINAL name of a renamed
+  binding, and that is its own chantier.
+
+### Judge
+
+`playground/run.mjs` **27/27** (+2), with a new `expect-sourcemap` check that
+decodes the map with the standard `source-map` consumer, walks every line of
+real code, and verifies one named position against the actual source text.
+Projects: `sourcemap-basic` (three modules merged) and `sourcemap-jsx` (the full
+chain through JSX lowering).
+
+99 Zig tests (+6, in zcompiler), 157 Node tests (+11), 12/12 fixtures, 3/3
+real-world projects. `sourcemap: false` is byte-identical to the previous
+release, and two runs produce identical maps.
+
 ## [0.3.0] — 2026-07-27
 
 **`tsconfig.json` support.** zbundle now takes resolution and JSX settings from
@@ -73,9 +128,20 @@ the resolver does not carry.
 - The reserved options move one version along, now that v0.3 is taken:
   `sourcemap` v0.4, `watch` v0.5, `chunkFileNames`/`assetFileNames` v0.6.
 
+- **The alias scope is canonical.** `resolver.zig` compares it against module
+  directories that went through `realPath`, so a scope built from a path that was
+  never canonicalised — `/var` vs `/private/var` on macOS, any symlinked checkout
+  — would never match and the tsconfig would silently do nothing.
+
+- **A malformed `paths` entry is reported.** Mapping a key to a string instead of
+  an array, to an empty array, or to non-strings used to be skipped without a
+  word; the only symptom was a "cannot resolve" further down with nothing
+  pointing back at it. Validating a tsconfig stays `tsc`'s job, so the build goes
+  on — but it says what it ignored.
+
 ### Verified
 
-93 Zig tests (+9), 142 Node tests (+16), **25/25** in the playground judge — four
+93 Zig tests (+9), 146 Node tests (+20), **25/25** in the playground judge — four
 new projects, and the twenty-one existing ones unchanged. The new ones are built
 through the command, config file included: `tsconfig-paths` (the twin of
 `config-alias`, with no `resolve.alias` anywhere), `tsconfig-extends` (a

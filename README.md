@@ -113,10 +113,10 @@ Command-line options win over the config file, which wins over the defaults.
 TypeScript configs load through Node's own type stripping (22.6+) — no
 dependency; jiti is used as a fallback if your project happens to have it.
 
-**An option that is accepted must act.** `sourcemap: true`, `watch: true`,
+**An option that is accepted must act.** `watch: true`,
 `output.chunkFileNames`, `output.assetFileNames` and any `output.format` other
 than `esm` are therefore **errors** naming the version they are planned for —
-never options quietly ignored. An unknown key is only a warning, with a
+never options quietly ignored. `sourcemap` was one of them until **0.4.0**. An unknown key is only a warning, with a
 suggestion (`unknown option minfy — did you mean minify?`).
 
 `minify` shortens cross-module names, with the guarantee that a short name never
@@ -158,15 +158,16 @@ stay in the bundle. zbundle builds libraries, not applications, for now.
 | | |
 |---|---|
 | Zig tests | 93 |
-| Node tests | 142 |
-| playground (the judge) | **25/25** — the bundle says what the original says, and dead code is gone (4 projects judged through the CLI, config included) |
+| Node tests | 146 |
+| playground (the judge) | **27/27** — the bundle says what the original says, and dead code is gone (4 projects judged through the CLI, config included) |
 | graph fixtures | 12/12 |
 | real-world projects | 3/3 |
 | real world | **lodash-es: 172 modules, 131 → 81 KB, 30 ms**, identical output |
 
 ## Roadmap
 
-- **next** — source maps (v0.3), then a real watch mode (v0.4).
+- **next** — a real watch mode (v0.5), then code splitting (v0.6). See
+  [ROADMAP.md](ROADMAP.md).
 - **after** — `node_modules` (real package resolution, and the `sideEffects`
   field that comes with it) and code splitting (`is_dynamic` edges are already in
   the graph).

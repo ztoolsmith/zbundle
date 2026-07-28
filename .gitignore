@@ -27,6 +27,8 @@ CLAUDE.md
 !/playground/projects/ts-jsx/node_modules/**
 !/playground/projects/tsconfig-jsx/node_modules/
 !/playground/projects/tsconfig-jsx/node_modules/**
+!/playground/projects/sourcemap-jsx/node_modules/
+!/playground/projects/sourcemap-jsx/node_modules/**
 
 # Artefacts du playground (bundles générés + miroirs de référence)
 /playground/projects/*/.bundle.mjs

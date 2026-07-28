@@ -28,6 +28,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import zbundle from "zbundle";
 import zcompiler from "zcompiler";
+import { SourceMapConsumer } from "source-map";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PROJECTS = path.join(HERE, "projects");
@@ -212,6 +213,10 @@ function checkProject(dir) {
   const shaking = checkShaking(dir, entry, code);
   if (shaking) return record(name, shaking.what, shaking.detail);
 
+  // THE SOURCE MAP, decoded by the standard library and walked end to end.
+  const smap = checkSourcemap(dir, entry, code);
+  if (smap) return record(name, smap.what, smap.detail);
+
   // THE IMPORTING WITNESS: exports are a CONTRACT, so they get tested as one.
   // Running the bundle as a script NEVER touches its `export { … }` — that is
   // the hole through which an export regression would slip unnoticed.
@@ -241,6 +246,74 @@ function checkProject(dir) {
       `${stats.externals} ext  ${String(stats.renamed).padStart(2)} renamed  ` +
       `${shaken}${stats.input_bytes}→${stats.output_bytes} B (${pct} %)  ${DIM}${stats.bundle_ms.toFixed(2)} ms${OFF}`,
   );
+}
+
+/**
+ * The `// expect-sourcemap: <needle> -> <file>` header.
+ *
+ * A map that merely PARSES proves nothing: it has to point somewhere true. So
+ * the bundle is walked line by line — every line of real code must resolve to a
+ * source — and then one known position is checked by name: the identifier
+ * `<needle>` in the bundle must come from `<file>`, at a line that really
+ * contains it.
+ *
+ * Decoded with the standard `source-map` consumer rather than our own encoder:
+ * a map is only worth what a debugger makes of it.
+ */
+function checkSourcemap(dir, entry, code) {
+  const head = fs.readFileSync(entry, "utf8");
+  const want = head.match(/\/\/\s*expect-sourcemap:\s*(\S+)\s*->\s*(\S+)/);
+  if (!want) return null;
+  const [, needle, wantSource] = want;
+
+  const dist = path.join(dir, "dist");
+  const mapName = fs.existsSync(dist) ? fs.readdirSync(dist).find((f) => f.endsWith(".map")) : null;
+  if (!mapName) return { what: "no .map was emitted", detail: "sourcemap is on in the config" };
+
+  let map;
+  try {
+    map = JSON.parse(fs.readFileSync(path.join(dist, mapName), "utf8"));
+  } catch (err) {
+    return { what: "the .map is not valid JSON", detail: err.message };
+  }
+  if (map.version !== 3) return { what: "the .map is not v3", detail: String(map.version) };
+  if (!Array.isArray(map.sourcesContent) || map.sourcesContent.length !== map.sources.length) {
+    return { what: "sourcesContent does not match sources", detail: `${map.sourcesContent?.length} vs ${map.sources.length}` };
+  }
+
+  const problems = [];
+  const lines = code.split("\n");
+  SourceMapConsumer.with(map, null, (c) => {
+    // Every line of real code resolves. A comment or a blank line may not.
+    for (const [i, line] of lines.entries()) {
+      const col = line.search(/\S/);
+      if (col < 0 || line.trimStart().startsWith("//") || line.trimStart().startsWith("import ")) continue;
+      const o = c.originalPositionFor({ line: i + 1, column: col });
+      if (!o.source) problems.push(`bundle L${i + 1} maps to nothing: ${JSON.stringify(line.slice(0, 40))}`);
+    }
+    // The named position, checked against the ACTUAL source text.
+    const gl = lines.findIndex((l) => l.includes(needle) && !l.trimStart().startsWith("//"));
+    if (gl < 0) {
+      problems.push(`${needle} is not in the bundle`);
+      return;
+    }
+    const gc = lines[gl].indexOf(needle);
+    const o = c.originalPositionFor({ line: gl + 1, column: gc });
+    if (!o.source) {
+      problems.push(`${needle} maps to nothing`);
+      return;
+    }
+    if (!o.source.endsWith(wantSource)) {
+      problems.push(`${needle} maps to ${o.source}, expected ${wantSource}`);
+      return;
+    }
+    const content = map.sourcesContent[map.sources.indexOf(o.source)];
+    const srcLine = content.split("\n")[o.line - 1] ?? "";
+    if (!srcLine.includes(needle)) {
+      problems.push(`${needle} maps to ${o.source} L${o.line} — that line does not contain it: ${JSON.stringify(srcLine)}`);
+    }
+  });
+  return problems.length ? { what: "the SOURCE MAP is wrong", detail: problems.join("\n") } : null;
 }
 
 /**

@@ -26,6 +26,9 @@ export type Mode = "development" | "production";
 /** The only output format v1 emits. The type says it, so does the validator. */
 export type Format = "esm";
 
+/** How a source map is delivered. `false` is the default: nothing at all. */
+export type SourcemapMode = boolean | "inline" | "hidden";
+
 export interface JsxOptions {
   /**
    * What the JSX transform imports its runtime from: `"react"` gives
@@ -117,14 +120,31 @@ export interface Config {
    * `paths`, and an explicit `jsx.importSource` overrides the tsconfig's.
    */
   tsconfig?: string | false;
-  /** RESERVED — setting it to `true` is an error that names the target version. */
-  sourcemap?: boolean;
+  /**
+   * Emit a source map v3 — a position in the bundle points back at the exact
+   * character of the original `.ts`.
+   *
+   *   - `false` (default) — no map, and not one extra byte in the bundle;
+   *   - `true` — a `.js.map` beside the bundle, plus the `sourceMappingURL`
+   *     comment that points at it;
+   *   - `'inline'` — the map as a base64 data URL inside the bundle itself;
+   *   - `'hidden'` — the `.map` is written but NO comment is added, for the
+   *     setups that upload it separately.
+   *
+   * The chain is followed end to end: TS/TSX source -> type stripping and JSX
+   * lowering -> scope hoisting and cross-module renaming -> printed output. A
+   * renamed binding still points at the identifier it came from.
+   */
+  sourcemap?: boolean | "inline" | "hidden";
   /** RESERVED — setting it to `true` is an error that names the target version. */
   watch?: boolean;
 }
 
 /** The resolver's extension table, mirrored here as the documented default. */
 export const DEFAULT_EXTENSIONS: readonly string[] = [".ts", ".tsx", ".js", ".jsx", ".mjs"];
+
+/** Embedded by default: debugging then needs no access to the original tree. */
+export const DEFAULT_SOURCEMAP_CONTENT = true;
 
 export const DEFAULT_OUT_DIR = "dist";
 export const DEFAULT_ENTRY_FILE_NAMES = "[name].js";

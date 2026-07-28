@@ -16,6 +16,7 @@ import {
   DEFAULT_OUT_DIR,
   type Config,
   type Mode,
+  type SourcemapMode,
 } from "./config.js";
 import { ConfigError } from "./load.js";
 import type { ScopedAlias } from "./tsconfig.js";
@@ -49,6 +50,7 @@ export interface ResolvedConfig {
   tsconfig: string | false | "auto";
   /** Set only when the CONFIG says so — it then wins over any tsconfig. */
   jsxImportSource?: string;
+  sourcemap: SourcemapMode;
 }
 
 /**
@@ -57,7 +59,9 @@ export interface ResolvedConfig {
  * not in an issue tracker you have to go find.
  */
 const RESERVED: Record<string, { what: string; version: string }> = {
-  sourcemap: { what: "sourcemap", version: "v0.4" },
+  // `sourcemap` was here until 0.4.0 delivered it. A version that ships a
+  // capability removes its refusal in the SAME commit — otherwise the error
+  // message outlives what it described.
   watch: { what: "watch", version: "v0.5" },
   "output.chunkFileNames": { what: "output.chunkFileNames", version: "v0.6" },
   "output.assetFileNames": { what: "output.assetFileNames", version: "v0.6" },
@@ -310,18 +314,24 @@ export function validate(
     }
   }
 
+  // ---- sourcemap (delivered in 0.4.0) ----
+  let sourcemap: SourcemapMode = false;
+  if (c.sourcemap !== undefined) {
+    const v = c.sourcemap;
+    if (v !== true && v !== false && v !== "inline" && v !== "hidden") {
+      wrongType("sourcemap", v, `boolean | "inline" | "hidden"`);
+    }
+    sourcemap = v;
+  }
+
   // ---- the reserved booleans ----
   // `false` is the current behaviour, so it is accepted; only asking for the
   // feature is refused.
-  if (c.sourcemap === true) reserved("sourcemap");
-  if (c.sourcemap !== undefined && typeof c.sourcemap !== "boolean") {
-    wrongType("sourcemap", c.sourcemap, "boolean");
-  }
   if (c.watch === true) reserved("watch");
   if (c.watch !== undefined && typeof c.watch !== "boolean") wrongType("watch", c.watch, "boolean");
 
   return {
-    config: { mode, root: configDir, entries, outDir, entryFileNames, clean, minify, alias, extensions, tsconfig, jsxImportSource },
+    config: { mode, root: configDir, entries, outDir, entryFileNames, clean, minify, alias, extensions, tsconfig, jsxImportSource, sourcemap },
     warnings,
   };
 }

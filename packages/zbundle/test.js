@@ -475,7 +475,7 @@ test("live binding imported BY NAME: accepted (hoisting handles it)", () => {
 test("VERSION follows package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.3.0");
+  assert.equal(zbundle.VERSION, "0.4.0");
 });
 
 // ══════════════════ v0.3 : LE TREE-SHAKING ══════════════════
@@ -565,7 +565,7 @@ test("non-regression: the linking projects keep their behaviour", () => {
 test("VERSION matches package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.3.0");
+  assert.equal(zbundle.VERSION, "0.4.0");
 });
 
 // ══════════════════ LE CLI ══════════════════
@@ -985,7 +985,6 @@ test("config: no config file at all is a clear error, with the names tried", () 
 // ---- the RESERVED options: each one errors, and names its version ----
 
 const RESERVED_CASES = [
-  ["sourcemap", `{ input: "m.js", sourcemap: true }`, /sourcemap: reserved — planned for v0\.4/],
   ["watch", `{ input: "m.js", watch: true }`, /watch: reserved — planned for v0\.5/],
   ["output.chunkFileNames", `{ input: "m.js", output: { chunkFileNames: "[name].js" } }`, /chunkFileNames: reserved — planned for v0\.6/],
   ["output.assetFileNames", `{ input: "m.js", output: { assetFileNames: "[name][ext]" } }`, /assetFileNames: reserved — planned for v0\.6/],
@@ -1002,10 +1001,10 @@ for (const [name, body, expected] of RESERVED_CASES) {
   });
 }
 
-test("config: sourcemap/watch set to FALSE are accepted (that is the behaviour)", () => {
+test("config: watch set to FALSE is accepted (that is the behaviour)", () => {
   const dir = tmpProject({
     "m.js": `console.log(1);`,
-    "zbundle.config.ts": `export default { input: "m.js", sourcemap: false, watch: false };`,
+    "zbundle.config.ts": `export default { input: "m.js", watch: false };`,
   });
   assert.equal(build(dir).status, 0);
 });
@@ -1641,4 +1640,258 @@ test("tsconfig: everything outside the closed list is ignored in silence", () =>
   assert.doesNotMatch(r.stderr, /⚠|unknown|ignored/);
   // ES5 target notwithstanding: there is no downleveling, the arrow survives.
   assert.ok(exists(dir, "dist", "main.js"));
+});
+
+test("tsconfig: the alias scope is CANONICAL, like the module paths it is compared to", () => {
+  const dir = tmpProject({
+    "node_modules/@repo/tsconfig/package.json": `{ "name": "@repo/tsconfig" }`,
+    // Reached through `require.resolve`, which canonicalises. The scope comes
+    // from the extending file, which does not — and `resolver.zig` compares the
+    // scope against module directories that went through `realPath`. A
+    // non-canonical scope would simply never match, in silence.
+    "node_modules/@repo/tsconfig/tsconfig.json": `{ "compilerOptions": { "paths": { "@/*": ["../../../src/*"] } } }`,
+    "tsconfig.json": `{ "extends": "@repo/tsconfig" }`,
+    "src/dep.ts": `export const v = 5;`,
+    "src/main.ts": `import { v } from '@/dep.ts'; console.log(v);`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(read(dir, "dist", "main.js"), /const v = 5/);
+});
+
+test("tsconfig: extends an npm PACKAGE, by name or by file", () => {
+  const files = (ext) => ({
+    "node_modules/@repo/tsconfig/package.json": `{ "name": "@repo/tsconfig" }`,
+    "node_modules/@repo/tsconfig/tsconfig.json": `{ "compilerOptions": { "paths": { "@/*": ["../../../src/*"] } } }`,
+    "tsconfig.json": `{ "extends": ${JSON.stringify(ext)} }`,
+    "src/dep.ts": `export const v = 6;`,
+    "src/main.ts": `import { v } from '@/dep.ts'; console.log(v);`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  for (const ext of ["@repo/tsconfig", "@repo/tsconfig/tsconfig.json"]) {
+    const dir = tmpProject(files(ext));
+    assert.equal(build(dir).status, 0, `extends ${ext}`);
+    assert.match(read(dir, "dist", "main.js"), /const v = 6/);
+  }
+});
+
+test("tsconfig: a malformed paths entry is skipped, but never in silence", () => {
+  for (const [bad, expected] of [
+    [`"./src/*"`, /must map to an ARRAY/],
+    [`[42]`, /lists no string target/],
+    [`[]`, /has no target/],
+  ]) {
+    const dir = tmpProject({
+      "src/main.ts": `console.log(1);`,
+      "tsconfig.json": `{ "compilerOptions": { "paths": { "@/*": ${bad} } } }`,
+      "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+    });
+    const r = build(dir);
+    // Validating a tsconfig is `tsc`'s job, so the build goes on…
+    assert.equal(r.status, 0, r.stderr);
+    // …but the only other symptom would be a "cannot resolve" with nothing
+    // pointing back at the malformed entry.
+    assert.match(r.stderr, expected);
+  }
+});
+
+test("tsconfig: a JSONC string keeps its content (a real parser, not a regex)", () => {
+  const dir = tmpProject({
+    "src/dep.ts": `export const v = 8;`,
+    "src/main.ts": `import { v } from '@/dep.ts'; console.log(v);`,
+    // `//` and `/*` INSIDE strings must not be taken for comments — the exact
+    // thing a comment-stripping regex gets wrong.
+    "tsconfig.json": `{
+      "$schema": "http://json.schemastore.org/tsconfig",
+      "x": "a/*not a comment*/b",
+      "compilerOptions": { "paths": { "@/*": ["./src/*"] } }
+    }`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(read(dir, "dist", "main.js"), /const v = 8/);
+});
+
+// ══════════════════ SOURCE MAPS ══════════════════
+// A map that merely parses proves nothing. Every case below decodes it with the
+// standard `source-map` consumer and checks it points somewhere TRUE.
+
+const { SourceMapConsumer } = require("source-map");
+
+/** A tiny TS project whose positions we know by heart. */
+function mapProject(sourcemap) {
+  return tmpProject({
+    "src/dep.ts": `export const helper = (n: number): number => n * 2;\nexport const unused = () => "dead";\n`,
+    "src/main.ts": `import { helper } from './dep.ts';\nconst answer = helper(21);\nconsole.log(answer);\n`,
+    "zbundle.config.ts": `export default { input: "src/main.ts", sourcemap: ${sourcemap} };`,
+  });
+}
+
+test("sourcemap: false emits nothing, and the bundle is byte-identical", () => {
+  const off = mapProject("false");
+  const absent = tmpProject({
+    "src/dep.ts": `export const helper = (n: number): number => n * 2;\nexport const unused = () => "dead";\n`,
+    "src/main.ts": `import { helper } from './dep.ts';\nconst answer = helper(21);\nconsole.log(answer);\n`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  assert.equal(build(off).status, 0);
+  assert.equal(build(absent).status, 0);
+  assert.ok(!exists(off, "dist", "main.js.map"));
+  assert.doesNotMatch(read(off, "dist", "main.js"), /sourceMappingURL/);
+  // Asking for no map must cost nothing at all — not one byte.
+  assert.equal(read(off, "dist", "main.js"), read(absent, "dist", "main.js"));
+});
+
+test("sourcemap: true writes a .map and points at it", () => {
+  const dir = mapProject("true");
+  assert.equal(build(dir).status, 0);
+  assert.ok(exists(dir, "dist", "main.js.map"));
+  assert.match(read(dir, "dist", "main.js"), /\/\/# sourceMappingURL=main\.js\.map/);
+});
+
+test("sourcemap: inline embeds a data URL and writes no file", () => {
+  const dir = mapProject(`"inline"`);
+  assert.equal(build(dir).status, 0);
+  assert.ok(!exists(dir, "dist", "main.js.map"));
+  const code = read(dir, "dist", "main.js");
+  const m = code.match(/sourceMappingURL=data:application\/json;charset=utf-8;base64,([A-Za-z0-9+/=]+)/);
+  assert.ok(m, "no inline data URL");
+  const map = JSON.parse(Buffer.from(m[1], "base64").toString("utf8"));
+  assert.equal(map.version, 3);
+  assert.ok(map.mappings.length > 0);
+});
+
+test("sourcemap: hidden writes the .map but adds NO comment", () => {
+  const dir = mapProject(`"hidden"`);
+  assert.equal(build(dir).status, 0);
+  assert.ok(exists(dir, "dist", "main.js.map"));
+  // The point of `hidden`: the map exists for whoever uploads it, and nothing
+  // in the shipped bundle announces it.
+  assert.doesNotMatch(read(dir, "dist", "main.js"), /sourceMappingURL/);
+});
+
+test("sourcemap: the v3 shape is complete and self-contained", () => {
+  const dir = mapProject("true");
+  assert.equal(build(dir).status, 0);
+  const map = JSON.parse(read(dir, "dist", "main.js.map"));
+  assert.equal(map.version, 3);
+  assert.equal(map.file, "main.js");
+  assert.deepEqual([...map.sources].sort(), ["../src/dep.ts", "../src/main.ts"]);
+  // `sources` are relative to the MAP, not to the cwd: that is where a debugger
+  // resolves them from.
+  assert.ok(map.sources.every((s) => !path.isAbsolute(s)));
+  assert.equal(map.sourcesContent.length, map.sources.length);
+  assert.match(map.sourcesContent.join(""), /helper/);
+  assert.deepEqual(map.names, []);
+});
+
+test("sourcemap: END TO END — a bundle position lands on the right character", async () => {
+  const dir = mapProject("true");
+  assert.equal(build(dir).status, 0);
+  const code = read(dir, "dist", "main.js");
+  const map = JSON.parse(read(dir, "dist", "main.js.map"));
+  const lines = code.split("\n");
+
+  await SourceMapConsumer.with(map, null, (c) => {
+    // THE case: the call `helper(21)` in the bundle comes from main.ts line 2,
+    // at the column where `helper` really sits.
+    const gl = lines.findIndex((l) => l.includes("answer = helper"));
+    const gc = lines[gl].indexOf("helper");
+    const o = c.originalPositionFor({ line: gl + 1, column: gc });
+    assert.equal(o.source, "../src/main.ts");
+    assert.equal(o.line, 2);
+    const srcLine = map.sourcesContent[map.sources.indexOf(o.source)].split("\n")[o.line - 1];
+    assert.equal(srcLine.slice(o.column, o.column + 6), "helper");
+
+    // And the hoisted module: `const helper = …` comes from dep.ts, where the
+    // declaration starts AFTER `export ` — column 7, not 0.
+    const dl = lines.findIndex((l) => l.startsWith("const helper"));
+    const d = c.originalPositionFor({ line: dl + 1, column: 0 });
+    assert.equal(d.source, "../src/dep.ts");
+    assert.equal(d.line, 1);
+    assert.equal(d.column, 7);
+  });
+});
+
+test("sourcemap: the module HEADERS do not shift the mappings under them", async () => {
+  const dir = mapProject("true");
+  assert.equal(build(dir).status, 0);
+  const code = read(dir, "dist", "main.js");
+  const map = JSON.parse(read(dir, "dist", "main.js.map"));
+  const lines = code.split("\n");
+  await SourceMapConsumer.with(map, null, (c) => {
+    // The banner and the `// ── dep.ts ──` headers sit above real code, and the
+    // banner contains an em dash and box-drawing characters — three bytes each
+    // for one column. Every statement below them must still resolve.
+    for (const [i, l] of lines.entries()) {
+      if (!/^(const|console)/.test(l)) continue;
+      const o = c.originalPositionFor({ line: i + 1, column: 0 });
+      assert.ok(o.source, `bundle L${i + 1} maps to nothing: ${l}`);
+      assert.ok(o.line >= 1);
+    }
+  });
+});
+
+test("sourcemap: a RENAMED binding still points at its original identifier", async () => {
+  const dir = tmpProject({
+    "a.js": `export const shared = () => "a";`,
+    "b.js": `export const shared = () => "b";`,
+    "main.js":
+      `import { shared as fromA } from './a.js';\n` +
+      `import { shared as fromB } from './b.js';\n` +
+      `console.log(fromA(), fromB());\n`,
+    "zbundle.config.ts": `export default { input: "main.js", sourcemap: true };`,
+  });
+  assert.equal(build(dir).status, 0);
+  const code = read(dir, "dist", "main.js");
+  const map = JSON.parse(read(dir, "dist", "main.js.map"));
+  // One of the two collided and became `shared$1` — the bundle renamed it.
+  assert.match(code, /shared\$1/);
+  const lines = code.split("\n");
+  await SourceMapConsumer.with(map, null, (c) => {
+    const gl = lines.findIndex((l) => l.includes("shared$1 ="));
+    const o = c.originalPositionFor({ line: gl + 1, column: lines[gl].indexOf("shared$1") });
+    // Renaming replaces the TEXT of a node, never its span: the position still
+    // points at the `shared` that was written in the source.
+    const srcLine = map.sourcesContent[map.sources.indexOf(o.source)].split("\n")[o.line - 1];
+    assert.match(srcLine.slice(o.column), /^shared/);
+  });
+});
+
+test("sourcemap: two runs produce byte-identical maps (determinism)", () => {
+  const a = mapProject("true");
+  const b = mapProject("true");
+  assert.equal(build(a).status, 0);
+  assert.equal(build(b).status, 0);
+  assert.equal(read(a, "dist", "main.js.map"), read(b, "dist", "main.js.map"));
+});
+
+test("sourcemap: an unknown mode is refused", () => {
+  const dir = mapProject(`"linked"`);
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /sourcemap: expected boolean \| "inline" \| "hidden"/);
+});
+
+test("sourcemap: it is no longer a RESERVED option", () => {
+  const dir = mapProject("true");
+  const r = build(dir);
+  assert.equal(r.status, 0, r.stderr);
+  // The refusal left in the same release that delivered the feature.
+  assert.doesNotMatch(r.stderr, /reserved/);
+});
+
+test("CLI: --sourcemap overrides the config, and names an unknown mode", () => {
+  const dir = mapProject("false");
+  assert.equal(build(dir, ["--sourcemap"]).status, 0);
+  assert.ok(exists(dir, "dist", "main.js.map"));
+
+  assert.equal(build(dir, ["--sourcemap=hidden"]).status, 0);
+  assert.doesNotMatch(read(dir, "dist", "main.js"), /sourceMappingURL/);
+
+  const bad = build(dir, ["--sourcemap=linked"]);
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /unknown mode "linked"/);
 });

@@ -1,6 +1,6 @@
 {
   "name": "zbundle",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A JavaScript/TypeScript bundler written in Zig, built on zcompiler — scope hoisting, tree-shaking, single file",
   "keywords": [
     "bundler",
@@ -39,6 +39,7 @@
     ]
   },
   "devDependencies": {
+    "source-map": "^0.8.0",
     "zignapi": "0.4.1"
   },
   "license": "MIT",

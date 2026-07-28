@@ -68,6 +68,33 @@ pub const Options = struct {
     /// `jsxImportSource`: what the JSX transform imports its runtime from.
     /// Comes from the tsconfig, or from the zbundle config when it says so.
     jsx_import_source: []const u8 = "react",
+    /// Collect the position of every emitted node. Off by default: the emission
+    /// path then behaves exactly as before, to the byte and to the allocation.
+    sourcemap: bool = false,
+};
+
+/// Une position du bundle, et d'où elle vient.
+///
+/// **Offsets bruts des deux côtés**, pas des lignes/colonnes : le Zig ne sait
+/// pas encore quel texte entoure le bundle final, et convertir deux fois serait
+/// deux fois l'occasion de se tromper. La couche TS convertit une seule fois,
+/// au moment d'encoder.
+pub const MapEntry = struct {
+    /// Offset dans le bundle émis.
+    gen: u32,
+    /// Index dans `sources`.
+    source: u32,
+    /// Offset dans ce fichier source.
+    src: u32,
+};
+
+/// De quoi fabriquer une source map v3, sans que le Zig en connaisse le format.
+pub const SourceMap = struct {
+    /// Chemins absolus des modules, dans l'ordre des ids du graphe.
+    sources: []const []const u8,
+    /// Leur contenu — déjà en mémoire (le graphe les a lus), donc gratuit.
+    sources_content: []const []const u8,
+    entries: []const MapEntry,
 };
 
 pub const Stats = struct {
@@ -110,6 +137,8 @@ pub const Report = struct {
     code: []const u8,
     stats: Stats,
     dead: []const Dead,
+    /// Null quand `opts.sourcemap` est faux — zéro octet, zéro allocation.
+    map: ?SourceMap = null,
 };
 
 /// A module, with everything the linker learned about it.
@@ -165,6 +194,8 @@ const Linker = struct {
     entry_exports: u32 = 0,
     /// Cursor of the short-name generator (minify only).
     short_seq: u32 = 0,
+    /// Non-null when `opts.sourcemap`: filled as the bundle is written.
+    maps: ?*std.ArrayList(MapEntry) = null,
 
     fn fail(self: *Linker, comptime fmt: []const u8, args: anytype) Error {
         self.err.message = std.fmt.allocPrint(self.a, fmt, args) catch "bundle failed";
@@ -1008,8 +1039,17 @@ fn shortName(a: Allocator, n: u32) Error![]const u8 {
                 for (m.info.exports) |e| {
                     if (e.kind != .default_expr) continue;
                     try out.appendSlice(self.a, try std.fmt.allocPrint(self.a, "const {s} = ", .{m.default_name.?}));
-                    zc.printer.printExpression(e.value.?, m.source, out, self.a) catch
-                        return self.fail("cannot print the default export of {s}", .{self.display(m.path)});
+                    if (self.maps) |maps| {
+                        var scratch: std.ArrayList(zc.printer.Mapping) = .empty;
+                        zc.printer.printExpressionWith(e.value.?, m.source, out, .{ .maps = &scratch }, self.a) catch
+                            return self.fail("cannot print the default export of {s}", .{self.display(m.path)});
+                        for (scratch.items) |mp| {
+                            try maps.append(self.a, .{ .gen = mp.out, .source = m.id, .src = mp.src });
+                        }
+                    } else {
+                        zc.printer.printExpression(e.value.?, m.source, out, self.a) catch
+                            return self.fail("cannot print the default export of {s}", .{self.display(m.path)});
+                    }
                     try out.appendSlice(self.a, ";\n");
                 }
             },
@@ -1018,8 +1058,21 @@ fn shortName(a: Allocator, n: u32) Error![]const u8 {
     }
 
     fn printStmt(self: *Linker, m: *Mod, stmt: *zc.Node, out: *std.ArrayList(u8)) Error!void {
-        zc.printer.printStatement(stmt, m.source, out, self.a) catch
+        const maps = self.maps orelse {
+            zc.printer.printStatement(stmt, m.source, out, self.a) catch
+                return self.fail("cannot print a statement of {s}", .{self.display(m.path)});
+            return;
+        };
+        // Le printer écrit ses offsets DANS `out`, qui EST le buffer du bundle :
+        // le prélude d'externals et les en-têtes y sont déjà. Les positions sont
+        // donc absolues et correctes sans le moindre décalage à appliquer — le
+        // piège de la composition n'existe pas ici, par construction.
+        var scratch: std.ArrayList(zc.printer.Mapping) = .empty;
+        zc.printer.printStatementWith(stmt, m.source, out, .{ .maps = &scratch }, self.a) catch
             return self.fail("cannot print a statement of {s}", .{self.display(m.path)});
+        for (scratch.items) |mp| {
+            try maps.append(self.a, .{ .gen = mp.out, .source = m.id, .src = mp.src });
+        }
     }
 
     /// The namespace object: the ONLY materialization in linking.
@@ -1236,6 +1289,8 @@ pub fn bundleReport(a: Allocator, io: Io, entry: []const u8, err: *BundleError, 
     for (mods) |m| zc.mangler.applyRenames(m.sem);
 
     var out: std.ArrayList(u8) = .empty;
+    var map_entries: std.ArrayList(MapEntry) = .empty;
+    if (opts.sourcemap) l.maps = &map_entries;
     try l.emit(&out);
 
     // Shaking counts (after the fact: units carry their verdict).
@@ -1278,10 +1333,24 @@ pub fn bundleReport(a: Allocator, io: Io, entry: []const u8, err: *BundleError, 
         }
     }
 
+    // La source map, seulement si on l'a demandée. `sources_content` ne coûte
+    // rien : le graphe a déjà lu chaque module, on rend les mêmes tranches.
+    var map: ?SourceMap = null;
+    if (opts.sourcemap) {
+        const paths = try a.alloc([]const u8, mods.len);
+        const contents = try a.alloc([]const u8, mods.len);
+        for (mods, 0..) |m, i| {
+            paths[i] = m.path;
+            contents[i] = m.source;
+        }
+        map = .{ .sources = paths, .sources_content = contents, .entries = map_entries.items };
+    }
+
     const t1 = Io.Clock.awake.now(io).nanoseconds;
     return .{
         .code = out.items,
         .dead = dead.items,
+        .map = map,
         .stats = .{
             .modules = emitted_mods,
             .entry_exports = l.entry_exports,

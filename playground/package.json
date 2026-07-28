@@ -12,5 +12,8 @@
     "zbundle": "workspace:*",
     "zcompiler": "link:../../zcompiler/packages/zcompiler"
   },
-  "type": "module"
+  "type": "module",
+  "devDependencies": {
+    "source-map": "^0.8.0"
+  }
 }

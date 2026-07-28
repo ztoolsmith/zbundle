@@ -79,6 +79,7 @@ export default defineConfig({
 | `minify` | `mode === 'production'` | shortens cross-module names |
 | `jsx.importSource` | the tsconfig's, else `'react'` | what the JSX transform imports from |
 | `tsconfig` | auto-detected | a path to force one, or `false` to ignore them |
+| `sourcemap` | `false` | `true` \| `'inline'` \| `'hidden'` — a v3 map, chained through the whole pipeline |
 
 Lookup order: `zbundle.config.ts` → `.mts` → `.js` → `.mjs` → `.cjs`, or
 `--config`. A `.cjs` config types fine with JSDoc
@@ -116,12 +117,14 @@ Whatever the zbundle config says **wins**: `resolve.alias` merges over `paths`,
 
 > An option that is accepted must ACT.
 
-`sourcemap: true` (v0.3), `watch: true` (v0.4), `output.chunkFileNames` and
-`output.assetFileNames` (v0.5), an `output.format` other than `esm`, and an
-unknown `entryFileNames` placeholder are **errors** that name the version they
-are planned for. Accepting one of them and quietly doing nothing would be the
-worst of the possible behaviours. Setting `sourcemap: false` or `watch: false` is
-fine — that is what zbundle does today.
+`watch: true` (v0.5), `output.chunkFileNames` and `output.assetFileNames`
+(v0.6), an `output.format` other than `esm`, and an unknown `entryFileNames`
+placeholder are **errors** that name the version they are planned for. Accepting
+one of them and quietly doing nothing would be the worst of the possible
+behaviours. Setting `watch: false` is fine — that is what zbundle does today.
+
+`sourcemap` was on that list until **0.4.0 delivered it**; the refusal left in
+the same release.
 
 An unknown key is only a **warning**, with the closest match suggested, and the
 build carries on: a typo should not stop your work.
@@ -283,8 +286,8 @@ in the bundle. zbundle builds libraries, not applications, for now.
 | | |
 |---|---|
 | Zig tests | 93 |
-| Node tests | 142 |
-| the judge (the bundle runs and says what the original says) | **25/25** |
+| Node tests | 146 |
+| the judge (the bundle runs and says what the original says) | **27/27** |
 | graph fixtures | 12/12 |
 | real-world projects | 3/3 |
 | real world | **lodash-es: 172 modules, 131 → 81 KB, 30 ms**, identical output |
