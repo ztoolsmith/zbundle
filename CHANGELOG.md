@@ -4,6 +4,54 @@ All notable changes to zbundle. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/).
 
+## [0.4.3] — 2026-07-29
+
+**Minify and source maps together.** Everything the bundle emits now has a
+position — including the two things the linker writes itself.
+
+### Fixed
+
+- **Two synthesized constructs carried no mapping at all.** The
+  `const <name> =` that binds an `export default <expression>`, and the
+  materialized namespace object (`const x_ns = { … }`), are written by the LINKER
+  rather than printed from any node — so nothing mapped them.
+
+  Harmless-looking while names stayed readable, a dead end once `minify` turned
+  them into `b` and `ns_ns`: clicking either in a debugger led nowhere. They now
+  point at what they stand for — the `export default` statement for the former,
+  the start of the module for the latter, since a namespace object stands for the
+  whole module and not for one line of it.
+
+  Every line of real code in a minified bundle maps, and that is now asserted as
+  a whole rather than case by case.
+
+### Details
+
+- `minify` and `sourcemap` are **orthogonal**: asking for a map does not change
+  one byte of the code, and `minify` alone still emits no map. Pinned by a test
+  comparing the two outputs.
+- A mangled name resolving to its original was already delivered in 0.4.1. What
+  this release adds is the guarantee that *nothing is left out* — the previous
+  checks looked at identifiers, not at every emitted line.
+
+### Not in this release
+
+- **The compact printer does not exist.** The brief anticipated a single-line,
+  dense-column output arriving in zcompiler in parallel; it is not there — no
+  trace of it in `printer.zig` or anywhere else in the compiler. So there is no
+  compact output to keep a map correct on, and nothing was written against a
+  capability that does not exist. Whenever it lands, the column mapping it needs
+  is the part already exercised here.
+
+### Judge
+
+**31/31** (+1). `sourcemap-minify` builds with `minify: true` and
+`sourcemap: true`, and pairs the name check with an `expect-absent` on the
+readable name — so the name assertion cannot pass by accident on an unminified
+bundle. Both halves were negative-controlled.
+
+173 Node tests (+5), 100 Zig tests, 12/12 fixtures, 3/3 real-world projects.
+
 ## [0.4.2] — 2026-07-29
 
 **Paths.** Where `sources` points, and what a consumer is told about it.

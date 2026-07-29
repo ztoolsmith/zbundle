@@ -830,6 +830,22 @@ fn shortName(a: Allocator, n: u32) Error![]const u8 {
         }
     }
 
+    /// Marks a position the LINKER writes itself, rather than the printer.
+    ///
+    /// Two constructs are synthesized here and never pass through
+    /// `printStatement`: the `const <name> =` that binds an `export default
+    /// <expression>`, and the materialized namespace object. Without this they
+    /// carried NO mapping at all — invisible until minify turned them into `b`
+    /// and `ns_ns`, at which point a debugger had nothing to say about them.
+    ///
+    /// `src` is the source offset the construct stands for: the `export default`
+    /// statement for the former, the start of the module for the latter (a
+    /// namespace object stands for the whole module, not for one line of it).
+    fn markEmitted(self: *Linker, mod: ModuleId, src: u32, out: *std.ArrayList(u8)) Error!void {
+        const maps = self.maps orelse return;
+        try maps.append(self.a, .{ .gen = @intCast(out.items.len), .source = mod, .src = src });
+    }
+
     /// Registers an external with no imported names — emitted as `import 'x';`.
     fn ensureExternal(self: *Linker, specifier: []const u8) Error!void {
         const gop = try self.by_specifier.getOrPut(self.a, specifier);
@@ -1041,6 +1057,10 @@ fn shortName(a: Allocator, n: u32) Error![]const u8 {
                 // `export default <expr>`: bind the expression to the synthesized name.
                 for (m.info.exports) |e| {
                     if (e.kind != .default_expr) continue;
+                    // The `export default` statement is what this binding stands
+                    // for: mark BEFORE writing, so the mapping lands on the `c`
+                    // of `const`.
+                    try self.markEmitted(m.id, stmt.start, out);
                     try out.appendSlice(self.a, try std.fmt.allocPrint(self.a, "const {s} = ", .{m.default_name.?}));
                     if (self.maps) |maps| {
                         var scratch: std.ArrayList(zc.printer.Mapping) = .empty;
@@ -1082,6 +1102,9 @@ fn shortName(a: Allocator, n: u32) Error![]const u8 {
     /// `import * as ns` wants a real object at runtime, so we build it from the
     /// final names.
     fn emitNamespace(self: *Linker, id: ModuleId, name: []const u8, out: *std.ArrayList(u8)) Error!void {
+        // A namespace object stands for the WHOLE module, so it maps to its
+        // start rather than to any one line of it.
+        try self.markEmitted(id, 0, out);
         var pairs: std.ArrayList(NamePair) = .empty;
         var seen: std.StringHashMapUnmanaged(void) = .empty;
         try self.collectExports(id, &pairs, &seen, 0);

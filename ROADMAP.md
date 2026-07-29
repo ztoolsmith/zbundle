@@ -26,6 +26,7 @@ What is delivered, what is refused, and when the refusal is expected to lift.
 | **0.4.0** | **source maps** — v3, chained through the whole pipeline, four modes |
 | **0.4.1** | **faithful renaming** — the `names` field: a renamed binding resolves to what was written |
 | **0.4.2** | **paths** — `sources` relative to the map, POSIX always, `sourceRoot`, `sourcesContent` |
+| **0.4.3** | **minify + source maps** — every emitted line has a position, including what the linker synthesizes |
 
 ## Refused, with a date
 

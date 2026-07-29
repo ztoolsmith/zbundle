@@ -475,7 +475,7 @@ test("live binding imported BY NAME: accepted (hoisting handles it)", () => {
 test("VERSION follows package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.4.2");
+  assert.equal(zbundle.VERSION, "0.4.3");
 });
 
 // ══════════════════ v0.3 : LE TREE-SHAKING ══════════════════
@@ -565,7 +565,7 @@ test("non-regression: the linking projects keep their behaviour", () => {
 test("VERSION matches package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.4.2");
+  assert.equal(zbundle.VERSION, "0.4.3");
 });
 
 // ══════════════════ LE CLI ══════════════════
@@ -2101,4 +2101,123 @@ test("sourceEntry: a Windows path is normalised, and another drive falls back to
     sourceEntry("/p/dist", "/p/src/a.ts", () => "../src/a.ts", (p) => p.startsWith("/"), "/", toUrl),
     "../src/a.ts",
   );
+});
+
+// ---- minify and sourcemap together (0.4.3) ----
+
+test("sourcemap+minify: EVERY line of real code maps, including what the linker synthesizes", async () => {
+  const dir = tmpProject({
+    "dep.ts": `const secretValue = 40;\nexport default secretValue + 2;`,
+    "ns.ts": `export const alpha = 1;\nexport const beta = 2;`,
+    "main.ts":
+      `import answer from './dep.ts';\n` +
+      `import * as everything from './ns.ts';\n` +
+      `console.log(answer, everything.alpha);`,
+    "zbundle.config.ts": `export default { input: "main.ts", minify: true, sourcemap: true };`,
+  });
+  assert.equal(build(dir).status, 0);
+  const code = read(dir, "dist", "main.js");
+  const map = JSON.parse(read(dir, "dist", "main.js.map"));
+  const lines = code.split("\n");
+
+  await SourceMapConsumer.with(map, null, (c) => {
+    const unmapped = [];
+    for (const [i, l] of lines.entries()) {
+      const t = l.trimStart();
+      const col = l.search(/\S/);
+      if (col < 0 || t.startsWith("//") || t.startsWith("import ") || t.startsWith("export {")) continue;
+      if (!c.originalPositionFor({ line: i + 1, column: col }).source) unmapped.push(`L${i + 1}: ${l}`);
+    }
+    // Two constructs used to be missing here: the `const <name> =` the linker
+    // synthesizes for `export default <expr>`, and the materialized namespace
+    // object. Both are written BY the linker, never through the printer, so
+    // nothing mapped them — invisible while names were readable, a dead end once
+    // minify turned them into single letters.
+    assert.deepEqual(unmapped, [], `unmapped lines:\n${unmapped.join("\n")}`);
+  });
+});
+
+test("sourcemap+minify: the synthesized default binding points at its `export default`", async () => {
+  const dir = tmpProject({
+    "dep.ts": `const v = 40;\nexport default v + 2;`,
+    "main.ts": `import answer from './dep.ts';\nconsole.log(answer);`,
+    "zbundle.config.ts": `export default { input: "main.ts", minify: true, sourcemap: true };`,
+  });
+  assert.equal(build(dir).status, 0);
+  const code = read(dir, "dist", "main.js");
+  const map = JSON.parse(read(dir, "dist", "main.js.map"));
+  const lines = code.split("\n");
+  await SourceMapConsumer.with(map, null, (c) => {
+    // The line that binds the default expression — not the `const v = 40`.
+    const gl = lines.findIndex((l) => /^const \w+ = \w+ \+ 2;/.test(l));
+    assert.ok(gl >= 0, code);
+    const o = c.originalPositionFor({ line: gl + 1, column: 0 });
+    assert.equal(o.source, "../dep.ts");
+    assert.equal(o.line, 2); // `export default v + 2;`
+    const content = c.sourceContentFor(o.source, true);
+    assert.match(content.split("\n")[o.line - 1], /export default/);
+  });
+});
+
+test("sourcemap+minify: a namespace object points at the module it stands for", async () => {
+  const dir = tmpProject({
+    "ns.ts": `export const alpha = 1;\nexport const beta = 2;`,
+    "main.ts": `import * as everything from './ns.ts';\nconsole.log(everything.alpha);`,
+    "zbundle.config.ts": `export default { input: "main.ts", minify: true, sourcemap: true };`,
+  });
+  assert.equal(build(dir).status, 0);
+  const code = read(dir, "dist", "main.js");
+  const map = JSON.parse(read(dir, "dist", "main.js.map"));
+  const lines = code.split("\n");
+  await SourceMapConsumer.with(map, null, (c) => {
+    const gl = lines.findIndex((l) => l.includes("_ns = {"));
+    assert.ok(gl >= 0, code);
+    const o = c.originalPositionFor({ line: gl + 1, column: 0 });
+    // It stands for the WHOLE module, so the start of it — not any one line.
+    assert.equal(o.source, "../ns.ts");
+    assert.equal(o.line, 1);
+    assert.equal(o.column, 0);
+  });
+});
+
+test("sourcemap+minify: a mangled name still resolves, and shortening really happened", async () => {
+  const dir = tmpProject({
+    "dep.ts": `export const computeTheAnswer = (n: number) => n * 2;`,
+    "main.ts": `import { computeTheAnswer } from './dep.ts';\nconsole.log(computeTheAnswer(21));`,
+    "zbundle.config.ts": `export default { input: "main.ts", minify: true, sourcemap: true };`,
+  });
+  assert.equal(build(dir).status, 0);
+  const code = read(dir, "dist", "main.js");
+  const map = JSON.parse(read(dir, "dist", "main.js.map"));
+  // The name check would pass trivially if nothing had been shortened.
+  assert.doesNotMatch(code, /computeTheAnswer/);
+  assert.ok(map.names.includes("computeTheAnswer"), JSON.stringify(map.names));
+
+  const lines = code.split("\n");
+  await SourceMapConsumer.with(map, null, (c) => {
+    let seen = 0;
+    for (const [i, l] of lines.entries()) {
+      if (l.trimStart().startsWith("//")) continue;
+      for (const m of l.matchAll(/\ba\b/g)) {
+        assert.equal(c.originalPositionFor({ line: i + 1, column: m.index }).name, "computeTheAnswer");
+        seen++;
+      }
+    }
+    assert.ok(seen >= 2, `only ${seen} occurrence(s)`);
+  });
+});
+
+test("sourcemap+minify: minify alone still costs no map, and the map costs no rename", () => {
+  const base = {
+    "dep.ts": `export const longEnough = (n: number) => n * 2;`,
+    "main.ts": `import { longEnough } from './dep.ts';\nconsole.log(longEnough(21));`,
+  };
+  const minOnly = tmpProject({ ...base, "zbundle.config.ts": `export default { input: "main.ts", minify: true };` });
+  const both = tmpProject({ ...base, "zbundle.config.ts": `export default { input: "main.ts", minify: true, sourcemap: "hidden" };` });
+  assert.equal(build(minOnly).status, 0);
+  assert.equal(build(both).status, 0);
+  assert.ok(!exists(minOnly, "dist", "main.js.map"));
+  // The two options are orthogonal: asking for a map must not change one byte of
+  // the code, and `hidden` adds no comment either.
+  assert.equal(read(minOnly, "dist", "main.js"), read(both, "dist", "main.js"));
 });

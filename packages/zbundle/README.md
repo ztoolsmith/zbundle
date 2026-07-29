@@ -287,7 +287,7 @@ in the bundle. zbundle builds libraries, not applications, for now.
 |---|---|
 | Zig tests | 93 |
 | Node tests | 146 |
-| the judge (the bundle runs and says what the original says) | **30/30** |
+| the judge (the bundle runs and says what the original says) | **31/31** |
 | graph fixtures | 12/12 |
 | real-world projects | 3/3 |
 | real world | **lodash-es: 172 modules, 131 → 81 KB, 30 ms**, identical output |
