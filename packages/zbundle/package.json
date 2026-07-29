@@ -1,6 +1,6 @@
 {
   "name": "zbundle",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "A JavaScript/TypeScript bundler written in Zig, built on zcompiler — scope hoisting, tree-shaking, single file",
   "keywords": [
     "bundler",
@@ -10,6 +10,7 @@
     "esm",
     "module-graph"
   ],
+  "homepage": "https://github.com/ztoolsmith/zbundle",
   "main": "index.js",
   "types": "index.d.ts",
   "files": [

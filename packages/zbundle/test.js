@@ -475,7 +475,7 @@ test("live binding imported BY NAME: accepted (hoisting handles it)", () => {
 test("VERSION follows package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.4.1");
+  assert.equal(zbundle.VERSION, "0.4.2");
 });
 
 // ══════════════════ v0.3 : LE TREE-SHAKING ══════════════════
@@ -565,7 +565,7 @@ test("non-regression: the linking projects keep their behaviour", () => {
 test("VERSION matches package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.4.1");
+  assert.equal(zbundle.VERSION, "0.4.2");
 });
 
 // ══════════════════ LE CLI ══════════════════
@@ -1975,4 +1975,130 @@ test("sourcemap: names survive determinism (two runs, identical maps)", () => {
   assert.equal(build(a).status, 0);
   assert.equal(build(b).status, 0);
   assert.equal(read(a, "dist", "main.js.map"), read(b, "dist", "main.js.map"));
+});
+
+// ---- paths: where `sources` points, on any platform (0.4.2) ----
+
+const { sourceEntry } = require("./dist/sourcemap.js");
+
+/** A project whose sources sit one level below the config. */
+function pathProject(sourcemap) {
+  return tmpProject({
+    "src/deep/dep.js": `export const v = 1;`,
+    "src/main.js": `import { v } from './deep/dep.js';\nconsole.log(v);`,
+    "zbundle.config.ts": `export default { input: "src/main.js", sourcemap: ${sourcemap} };`,
+  });
+}
+const readMap = (dir, ...rel) => JSON.parse(read(dir, ...rel));
+
+test("sourcemap: sources are relative to the MAP, whatever output.dir is", () => {
+  const flat = pathProject("true");
+  assert.equal(build(flat).status, 0);
+  assert.deepEqual(readMap(flat, "dist", "main.js.map").sources.sort(), [
+    "../src/deep/dep.js",
+    "../src/main.js",
+  ]);
+
+  // One level deeper: every entry gains exactly one `..`. Resolving against the
+  // cwd instead would leave these unchanged, which is the classic bug.
+  const nested = tmpProject({
+    "src/deep/dep.js": `export const v = 1;`,
+    "src/main.js": `import { v } from './deep/dep.js';\nconsole.log(v);`,
+    "zbundle.config.ts": `export default {
+      input: "src/main.js", sourcemap: true, output: { dir: "build/js" },
+    };`,
+  });
+  assert.equal(build(nested).status, 0);
+  assert.deepEqual(readMap(nested, "build", "js", "main.js.map").sources.sort(), [
+    "../../src/deep/dep.js",
+    "../../src/main.js",
+  ]);
+});
+
+test("sourcemap: sources always use forward slashes", () => {
+  const dir = pathProject("true");
+  assert.equal(build(dir).status, 0);
+  for (const s of readMap(dir, "dist", "main.js.map").sources) {
+    // A `\` in a sources entry reads as an escape, not a directory: a bundle
+    // built on Windows has to open on Linux.
+    assert.doesNotMatch(s, /\\/, s);
+  }
+});
+
+test("sourcemap: sourceRoot is emitted only when asked", () => {
+  const without = pathProject("true");
+  assert.equal(build(without).status, 0);
+  // Absent, not empty: "no sourceRoot" and `sourceRoot: ""` are different
+  // statements, and some consumers treat them differently.
+  assert.ok(!("sourceRoot" in readMap(without, "dist", "main.js.map")));
+
+  const with_ = pathProject(`{ sourceRoot: "/@src/" }`);
+  assert.equal(build(with_).status, 0);
+  assert.equal(readMap(with_, "dist", "main.js.map").sourceRoot, "/@src/");
+});
+
+test("sourcemap: sourcesContent can be turned off", () => {
+  const on = pathProject("true");
+  const off = pathProject(`{ sourcesContent: false }`);
+  assert.equal(build(on).status, 0);
+  assert.equal(build(off).status, 0);
+  assert.equal(readMap(on, "dist", "main.js.map").sourcesContent.length, 2);
+  assert.ok(!("sourcesContent" in readMap(off, "dist", "main.js.map")));
+  // A much smaller map, for setups that serve the sources themselves.
+  assert.ok(read(off, "dist", "main.js.map").length < read(on, "dist", "main.js.map").length);
+});
+
+test("sourcemap: the object form implies a map, and mode still chooses how", () => {
+  const implied = pathProject(`{ sourceRoot: "x/" }`);
+  assert.equal(build(implied).status, 0);
+  // Writing the object at all means you want one.
+  assert.ok(exists(implied, "dist", "main.js.map"));
+  assert.match(read(implied, "dist", "main.js"), /sourceMappingURL/);
+
+  const hidden = pathProject(`{ mode: "hidden", sourceRoot: "x/" }`);
+  assert.equal(build(hidden).status, 0);
+  assert.ok(exists(hidden, "dist", "main.js.map"));
+  assert.doesNotMatch(read(hidden, "dist", "main.js"), /sourceMappingURL/);
+
+  const off = pathProject(`{ mode: false }`);
+  assert.equal(build(off).status, 0);
+  assert.ok(!exists(off, "dist", "main.js.map"));
+});
+
+test("sourcemap: a bad sourcemap object is refused by key and by type", () => {
+  const badMode = pathProject(`{ mode: "linked" }`);
+  assert.match(build(badMode).stderr, /sourcemap\.mode: expected boolean \| "inline" \| "hidden"/);
+
+  const badRoot = pathProject(`{ sourceRoot: 3 }`);
+  assert.match(build(badRoot).stderr, /sourcemap\.sourceRoot: expected string/);
+
+  const typo = pathProject(`{ sourceRot: "x" }`);
+  const r = build(typo);
+  assert.equal(r.status, 0, r.stderr); // an unknown key never stops the build
+  assert.match(r.stderr, /unknown option sourcemap\.sourceRot — did you mean sourcemap\.sourceRoot\?/);
+});
+
+test("sourceEntry: a Windows path is normalised, and another drive falls back to file://", () => {
+  // `sourceEntry` takes its path primitives as arguments precisely so the
+  // Windows behaviour can be exercised from any platform — the CI's Windows job
+  // is a smoke test, not the whole battery.
+  const winAbs = (p) => /^[A-Za-z]:/.test(p) || p.startsWith("\\");
+  const toUrl = (p) => `file:///${p.replace(/\\/g, "/")}`;
+
+  // Same drive: a relative path, with backslashes turned into slashes.
+  assert.equal(
+    sourceEntry("C:\\proj\\dist", "C:\\proj\\src\\a.ts", () => "..\\src\\a.ts", winAbs, "\\", toUrl),
+    "../src/a.ts",
+  );
+  // Another drive: `path.relative` cannot express it, so an absolute URL is the
+  // only honest answer — an absolute Windows path is not a valid sources entry.
+  assert.equal(
+    sourceEntry("C:\\proj\\dist", "D:\\other\\x.ts", () => "D:\\other\\x.ts", winAbs, "\\", toUrl),
+    "file:///D:/other/x.ts",
+  );
+  // POSIX, unchanged.
+  assert.equal(
+    sourceEntry("/p/dist", "/p/src/a.ts", () => "../src/a.ts", (p) => p.startsWith("/"), "/", toUrl),
+    "../src/a.ts",
+  );
 });

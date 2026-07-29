@@ -106,6 +106,8 @@ export interface BuildMapOptions {
   sourceNames: string[];
   /** Embed the sources in the map. */
   includeContent: boolean;
+  /** Prefixed to every source by the consumer. Omitted entirely when unset. */
+  sourceRoot?: string;
 }
 
 /**
@@ -199,8 +201,32 @@ export function buildSourceMap(
     mappings: out,
   };
   if (opts.file) map.file = opts.file;
+  // Set only when asked: `sourceRoot: ""` is a value, and "no sourceRoot" is a
+  // different statement that some consumers treat differently.
+  if (opts.sourceRoot !== undefined) map.sourceRoot = opts.sourceRoot;
   if (opts.includeContent) map.sourcesContent = raw.sources_content;
   return map;
+}
+
+/**
+ * How one source path is written into `sources`.
+ *
+ * **Relative to the MAP, never to the cwd.** That is where a debugger resolves
+ * them from, and it is what makes a map survive being moved with its bundle.
+ *
+ * **Always POSIX separators.** `sources` entries are URL-ish; a Windows `\`
+ * would be read as an escape, not a directory. A bundle built on Windows and
+ * opened on Linux has to work.
+ *
+ * **`file://` when no relative path exists.** On Windows a source on another
+ * drive cannot be reached relatively at all — `path.relative` returns an
+ * absolute path — and an absolute Windows path is not a valid `sources` entry.
+ * An absolute URL is the honest answer there.
+ */
+export function sourceEntry(mapDir: string, sourcePath: string, rel: (from: string, to: string) => string, isAbs: (p: string) => boolean, sep: string, toUrl: (p: string) => string): string {
+  const r = rel(mapDir, sourcePath);
+  if (r === "" || isAbs(r) || /^[A-Za-z]:/.test(r)) return toUrl(sourcePath);
+  return r.split(sep).join("/");
 }
 
 /** The trailing comment that points a debugger at the map. */

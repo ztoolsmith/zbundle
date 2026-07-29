@@ -29,6 +29,31 @@ export type Format = "esm";
 /** How a source map is delivered. `false` is the default: nothing at all. */
 export type SourcemapMode = boolean | "inline" | "hidden";
 
+/**
+ * The long form, for the two things a mode alone cannot say.
+ *
+ * Writing the object at all means you want a map, so `mode` defaults to `true`.
+ */
+export interface SourcemapOptions {
+  mode?: SourcemapMode;
+  /**
+   * Prefixed to every entry of `sources` by the consumer.
+   *
+   * Useful when the map is served from somewhere the relative paths do not
+   * reach — `'/@src/'`, `'https://example.com/src/'`. Left out entirely when
+   * unset: an empty `sourceRoot` is not the same as no `sourceRoot`.
+   */
+  sourceRoot?: string;
+  /**
+   * Embed the sources in the map. Default: `true` — debugging then needs no
+   * access to the original tree, which is the whole point of shipping a map.
+   *
+   * `false` makes a much smaller map, for setups that serve the sources
+   * themselves.
+   */
+  sourcesContent?: boolean;
+}
+
 export interface JsxOptions {
   /**
    * What the JSX transform imports its runtime from: `"react"` gives
@@ -135,7 +160,7 @@ export interface Config {
    * lowering -> scope hoisting and cross-module renaming -> printed output. A
    * renamed binding still points at the identifier it came from.
    */
-  sourcemap?: boolean | "inline" | "hidden";
+  sourcemap?: SourcemapMode | SourcemapOptions;
   /** RESERVED — setting it to `true` is an error that names the target version. */
   watch?: boolean;
 }

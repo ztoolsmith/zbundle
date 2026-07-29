@@ -17,6 +17,7 @@ import {
   type Config,
   type Mode,
   type SourcemapMode,
+  DEFAULT_SOURCEMAP_CONTENT,
 } from "./config.js";
 import { ConfigError } from "./load.js";
 import type { ScopedAlias } from "./tsconfig.js";
@@ -51,6 +52,9 @@ export interface ResolvedConfig {
   /** Set only when the CONFIG says so — it then wins over any tsconfig. */
   jsxImportSource?: string;
   sourcemap: SourcemapMode;
+  /** Left undefined when unset — an empty sourceRoot is not the same as none. */
+  sourcemapSourceRoot?: string;
+  sourcemapContent: boolean;
 }
 
 /**
@@ -81,6 +85,7 @@ const ISSUES = "https://github.com/ztoolsmith/zbundle/issues";
 
 const TOP_KEYS = ["mode", "input", "output", "resolve", "minify", "jsx", "tsconfig", "sourcemap", "watch"];
 const JSX_KEYS = ["importSource"];
+const SOURCEMAP_KEYS = ["mode", "sourceRoot", "sourcesContent"];
 const OUTPUT_KEYS = ["dir", "format", "entryFileNames", "clean", "chunkFileNames", "assetFileNames"];
 const RESOLVE_KEYS = ["alias", "extensions"];
 
@@ -314,14 +319,37 @@ export function validate(
     }
   }
 
-  // ---- sourcemap (delivered in 0.4.0) ----
+  // ---- sourcemap (0.4.0; the long form in 0.4.2) ----
   let sourcemap: SourcemapMode = false;
+  let sourcemapSourceRoot: string | undefined;
+  let sourcemapContent = DEFAULT_SOURCEMAP_CONTENT;
+  const isMode = (v: unknown): v is SourcemapMode =>
+    v === true || v === false || v === "inline" || v === "hidden";
   if (c.sourcemap !== undefined) {
     const v = c.sourcemap;
-    if (v !== true && v !== false && v !== "inline" && v !== "hidden") {
-      wrongType("sourcemap", v, `boolean | "inline" | "hidden"`);
+    if (isMode(v)) {
+      sourcemap = v;
+    } else if (isPlainObject(v)) {
+      checkKeys(v, SOURCEMAP_KEYS, "sourcemap", warnings);
+      // Writing the object at all means you want a map.
+      sourcemap = true;
+      if (v.mode !== undefined) {
+        if (!isMode(v.mode)) wrongType("sourcemap.mode", v.mode, `boolean | "inline" | "hidden"`);
+        sourcemap = v.mode;
+      }
+      if (v.sourceRoot !== undefined) {
+        if (typeof v.sourceRoot !== "string") wrongType("sourcemap.sourceRoot", v.sourceRoot, "string");
+        sourcemapSourceRoot = v.sourceRoot;
+      }
+      if (v.sourcesContent !== undefined) {
+        if (typeof v.sourcesContent !== "boolean") {
+          wrongType("sourcemap.sourcesContent", v.sourcesContent, "boolean");
+        }
+        sourcemapContent = v.sourcesContent;
+      }
+    } else {
+      wrongType("sourcemap", v, `boolean | "inline" | "hidden" | object`);
     }
-    sourcemap = v;
   }
 
   // ---- the reserved booleans ----
@@ -331,7 +359,7 @@ export function validate(
   if (c.watch !== undefined && typeof c.watch !== "boolean") wrongType("watch", c.watch, "boolean");
 
   return {
-    config: { mode, root: configDir, entries, outDir, entryFileNames, clean, minify, alias, extensions, tsconfig, jsxImportSource, sourcemap },
+    config: { mode, root: configDir, entries, outDir, entryFileNames, clean, minify, alias, extensions, tsconfig, jsxImportSource, sourcemap, sourcemapSourceRoot, sourcemapContent },
     warnings,
   };
 }

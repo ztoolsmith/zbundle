@@ -4,6 +4,60 @@ All notable changes to zbundle. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/).
 
+## [0.4.2] — 2026-07-29
+
+**Paths.** Where `sources` points, and what a consumer is told about it.
+
+### Added
+
+- **The long form of `sourcemap`**, for the two things a mode alone cannot say:
+
+  ```ts
+  sourcemap: { mode: "hidden", sourceRoot: "/@src/", sourcesContent: false }
+  ```
+
+  Writing the object at all means you want a map, so `mode` defaults to `true`.
+  The short form (`true` / `'inline'` / `'hidden'` / `false`) is unchanged.
+
+- **`sourceRoot`** — emitted only when asked. Absent is not the same as empty,
+  and some consumers treat the two differently.
+
+- **`sourcesContent: false`** — promised when 0.4.0 shipped and left undone. It
+  makes a much smaller map, for setups that serve the sources themselves.
+
+### Details
+
+- **`sources` are relative to the MAP, whatever `output.dir` is.** A nested
+  `output.dir` gains the matching `../..`; resolving against the cwd instead
+  would leave the entries unchanged and point at nothing — the map still parses,
+  the debugger just opens the wrong file. That is now pinned at two depths.
+- **Always forward slashes.** A `\` in a `sources` entry reads as an escape, not
+  a directory: a bundle built on Windows has to open on Linux.
+- **`file://` when no relative path exists.** On Windows a source on another
+  drive cannot be reached relatively at all — `path.relative` hands back an
+  absolute path, which is not a valid `sources` entry. An absolute URL is the
+  honest answer. `sourceEntry` takes its path primitives as arguments so this is
+  exercised from any platform, rather than hoping the Windows CI job covers it.
+
+### Fixed
+
+- The map was **assembled twice** per bundle — once for the inline data URL and
+  once for the file. Wasted work, and two chances to pass different options.
+- The judge looked for the bundle and the map at the top of `dist/` only, so a
+  nested `output.dir` was invisible to it. Both lookups are now recursive.
+- The judge read `sourcesContent` by indexing `map.sources`, which finds nothing
+  once a `sourceRoot` is set — the consumer hands back the PREFIXED path. It now
+  asks the library through `sourceContentFor`.
+
+### Judge
+
+**30/30** (+1). `sourcemap-outdir` builds into `dist/build/js` with a
+`sourceRoot`, and the judge resolves an identifier back through the map to check
+the line it lands on really contains it — which is what makes a wrong depth
+visible.
+
+168 Node tests (+7), 100 Zig tests, 12/12 fixtures, 3/3 real-world projects.
+
 ## [0.4.1] — 2026-07-29
 
 **Faithful renaming.** A renamed binding now hands a debugger the name that was

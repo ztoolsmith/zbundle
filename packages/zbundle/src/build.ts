@@ -6,12 +6,13 @@
 
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import process from "node:process";
 
 import { bundleWith } from "../index.js";
 import { ConfigError, type ResolvedConfig } from "./validate.js";
 import { translate, type ScopedAlias, type TsconfigInfo } from "./tsconfig.js";
-import { buildSourceMap, inlineDataUrl, sourceMappingURLComment, type RawMap } from "./sourcemap.js";
+import { buildSourceMap, inlineDataUrl, sourceEntry, sourceMappingURLComment, type RawMap } from "./sourcemap.js";
 
 /** The shorter of absolute and cwd-relative — an error message is read, not parsed. */
 function short(p: string): string {
@@ -301,19 +302,25 @@ export function runBuild(
 
     let code = report.code;
     let mapFile: string | undefined;
+    let mapJson: string | undefined;
     if (cfg.sourcemap !== false && report.map) {
-      // `sources` are written RELATIVE to the map itself: that is where a
-      // debugger resolves them from, and it keeps the map portable.
+      // Built ONCE. The first version assembled it twice — for the inline URL
+      // and again for the file — which is both wasted work and two chances to
+      // pass different options.
       const mapDir = dirname(outFile);
       const map = buildSourceMap(code, report.map, {
         file: basename(outFile),
-        sourceNames: report.map.sources.map((p) => toPosix(relative(mapDir, p))),
-        includeContent: true,
+        sourceNames: report.map.sources.map((p) =>
+          sourceEntry(mapDir, p, relative, isAbsolute, sep, (x) => pathToFileURL(x).href),
+        ),
+        includeContent: cfg.sourcemapContent,
+        sourceRoot: cfg.sourcemapSourceRoot,
       });
       if (cfg.sourcemap === "inline") {
         code += sourceMappingURLComment(inlineDataUrl(map));
       } else {
         mapFile = `${outFile}.map`;
+        mapJson = JSON.stringify(map);
         // `hidden` writes the map and says nothing: the comment is what a
         // debugger follows, and some setups upload the map out of band instead.
         if (cfg.sourcemap === true) code += sourceMappingURLComment(basename(mapFile));
@@ -322,27 +329,11 @@ export function runBuild(
 
     mkdirSync(dirname(outFile), { recursive: true });
     writeFileSync(outFile, code);
-    if (mapFile) {
-      writeFileSync(
-        mapFile,
-        JSON.stringify(
-          buildSourceMap(report.code, report.map!, {
-            file: basename(outFile),
-            sourceNames: report.map!.sources.map((p) => toPosix(relative(dirname(outFile), p))),
-            includeContent: true,
-          }),
-        ),
-      );
-    }
+    if (mapFile && mapJson) writeFileSync(mapFile, mapJson);
 
     results.push({ name, entry: file, outFile, stats: report.stats, dead: report.dead ?? [], mapFile });
   }
   return results;
-}
-
-/** A source map's `sources` are URLs: forward slashes, whatever the platform. */
-function toPosix(p: string): string {
-  return p.split(sep).join("/");
 }
 
 /** Total bytes written, for the recap line. */

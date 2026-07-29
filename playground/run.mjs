@@ -171,11 +171,17 @@ async function checkProject(dir) {
     } catch (err) {
       return record(name, "the CLI build FAILED", (err.stderr || err.message).trim());
     }
-    const produced = fs.existsSync(dist) ? fs.readdirSync(dist).filter((f) => f.endsWith(".js")) : [];
+    // Recursive: `output.dir` may nest (`dist/build/js`).
+    const walk = (d) =>
+      fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => {
+        const p = path.join(d, e.name);
+        return e.isDirectory() ? walk(p) : e.name.endsWith(".js") ? [p] : [];
+      });
+    const produced = fs.existsSync(dist) ? walk(dist) : [];
     if (produced.length !== 1) {
-      return record(name, `expected exactly 1 bundle in dist/, found ${produced.length}`, produced.join(", "));
+      return record(name, `expected exactly 1 bundle under dist/, found ${produced.length}`, produced.join(", "));
     }
-    code = fs.readFileSync(path.join(dist, produced[0]), "utf8");
+    code = fs.readFileSync(produced[0], "utf8");
   } else {
     try {
       const r = zbundle.bundleStats(entry);
@@ -269,13 +275,24 @@ async function checkSourcemap(dir, entry, code) {
   // bundle says one thing, the map must hand a debugger the other.
   const wantName = head.match(/\/\/\s*expect-sourcemap-name:\s*(\S+)\s*->\s*(\S+)/);
 
+  // `output.dir` may be nested, so the map is looked for recursively.
+  const findMap = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) {
+        const hit = findMap(p);
+        if (hit) return hit;
+      } else if (e.name.endsWith(".map")) return p;
+    }
+    return null;
+  };
   const dist = path.join(dir, "dist");
-  const mapName = fs.existsSync(dist) ? fs.readdirSync(dist).find((f) => f.endsWith(".map")) : null;
-  if (!mapName) return { what: "no .map was emitted", detail: "sourcemap is on in the config" };
+  const mapPath = fs.existsSync(dist) ? findMap(dist) : null;
+  if (!mapPath) return { what: "no .map was emitted", detail: "sourcemap is on in the config" };
 
   let map;
   try {
-    map = JSON.parse(fs.readFileSync(path.join(dist, mapName), "utf8"));
+    map = JSON.parse(fs.readFileSync(mapPath, "utf8"));
   } catch (err) {
     return { what: "the .map is not valid JSON", detail: err.message };
   }
@@ -319,7 +336,14 @@ async function checkSourcemap(dir, entry, code) {
       problems.push(`${needle} maps to ${o.source}, expected ${wantSource}`);
       return;
     }
-    const content = map.sourcesContent[map.sources.indexOf(o.source)];
+    // `sourceContentFor`, not an index into `map.sources`: when a `sourceRoot`
+    // is set the consumer hands back the PREFIXED path, so looking it up by
+    // identity finds nothing. The library knows how to undo its own prefix.
+    const content = c.sourceContentFor(o.source, true);
+    if (content === null) {
+      problems.push(`no sourcesContent for ${o.source}`);
+      return;
+    }
     const srcLine = content.split("\n")[o.line - 1] ?? "";
     if (!srcLine.includes(needle)) {
       problems.push(`${needle} maps to ${o.source} L${o.line} — that line does not contain it: ${JSON.stringify(srcLine)}`);
