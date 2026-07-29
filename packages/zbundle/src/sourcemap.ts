@@ -16,7 +16,7 @@
 export interface RawMap {
   sources: string[];
   sources_content: string[];
-  entries: { gen: number; source: number; src: number }[];
+  entries: { gen: number; source: number; src: number; name: boolean }[];
 }
 
 export interface SourceMapV3 {
@@ -82,6 +82,21 @@ class Positions {
     const column = this.bytes.toString("utf8", start, offset).length;
     return { line: lo, column };
   }
+
+  /**
+   * The identifier starting at `offset` (a byte offset), or null.
+   *
+   * Reuses the buffer this object already holds: rebuilding one per lookup
+   * turned a linear pass into a quadratic one, and a real bundle asks thousands
+   * of times. Only a small window is decoded — no identifier worth naming is
+   * longer, and a source is not ASCII, so it must be decoded rather than sliced.
+   */
+  identifierAt(offset: number): string | null {
+    if (offset >= this.bytes.length) return null;
+    const window = this.bytes.toString("utf8", offset, Math.min(offset + 64, this.bytes.length));
+    const m = /^[\p{ID_Start}$_][\p{ID_Continue}$]*/u.exec(window);
+    return m ? m[0] : null;
+  }
 }
 
 export interface BuildMapOptions {
@@ -108,11 +123,33 @@ export function buildSourceMap(
   const gen = new Positions(code);
   const sources = raw.sources_content.map((c) => new Positions(c));
 
+  // `names` — what makes a debugger show `helper` where the bundle says `a`.
+  //
+  // Only an IDENTIFIER can have been renamed, and only a renamed one is worth
+  // recording: when the emitted text already equals the source text, the
+  // debugger reads the source and a name would be dead weight. So a name is
+  // added exactly when the two DIFFER.
+  const names: string[] = [];
+  const nameIndex = new Map<string, number>();
+  const intern = (n: string): number => {
+    const known = nameIndex.get(n);
+    if (known !== undefined) return known;
+    nameIndex.set(n, names.length);
+    names.push(n);
+    return names.length - 1;
+  };
+
   const segments = raw.entries
     .map((e) => {
       const g = gen.at(e.gen);
       const s = sources[e.source]!.at(e.src);
-      return { genLine: g.line, genCol: g.column, source: e.source, srcLine: s.line, srcCol: s.column };
+      let name: number | undefined;
+      if (e.name) {
+        const original = sources[e.source]!.identifierAt(e.src);
+        const emitted = gen.identifierAt(e.gen);
+        if (original && emitted && original !== emitted) name = intern(original);
+      }
+      return { genLine: g.line, genCol: g.column, source: e.source, srcLine: s.line, srcCol: s.column, name };
     })
     // A stable order is required by the format, and it also makes the output
     // deterministic — two runs must produce the same bytes.
@@ -124,6 +161,7 @@ export function buildSourceMap(
   let prevSource = 0;
   let prevSrcLine = 0;
   let prevSrcCol = 0;
+  let prevName = 0;
   let firstInLine = true;
 
   for (const seg of segments) {
@@ -144,16 +182,20 @@ export function buildSourceMap(
     prevSource = seg.source;
     prevSrcLine = seg.srcLine;
     prevSrcCol = seg.srcCol;
+    // The fifth field, present only on the segments that carry a name. A
+    // four-field and a five-field segment may sit side by side; the `names`
+    // index is relative like the others, and only advances when one is written.
+    if (seg.name !== undefined) {
+      out += encodeVlq(seg.name - prevName);
+      prevName = seg.name;
+    }
     firstInLine = false;
   }
 
   const map: SourceMapV3 = {
     version: 3,
     sources: opts.sourceNames,
-    // `names` stays empty in 0.4.0: it is what lets a debugger show the ORIGINAL
-    // identifier for a renamed one, and renaming fidelity is its own chantier.
-    // An empty array is valid, and honest.
-    names: [],
+    names,
     mappings: out,
   };
   if (opts.file) map.file = opts.file;

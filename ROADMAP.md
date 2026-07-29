@@ -24,6 +24,7 @@ What is delivered, what is refused, and when the refusal is expected to lift.
 | 0.2.1–0.2.3 | output collisions, `.cjs` configs, path containment, the CLI obeying its own rule |
 | 0.3.0 | `tsconfig.json` — `paths`/`baseUrl` as scoped aliases, `jsx`, `jsxImportSource` |
 | **0.4.0** | **source maps** — v3, chained through the whole pipeline, four modes |
+| **0.4.1** | **faithful renaming** — the `names` field: a renamed binding resolves to what was written |
 
 ## Refused, with a date
 

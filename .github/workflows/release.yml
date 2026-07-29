@@ -52,6 +52,13 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm, cache-dependency-path: zbundle/pnpm-lock.yaml }
 
+      # Fail EARLY and readably when the sibling zcompiler predates what this
+      # zbundle needs. A Zig `path` dependency takes what is on disk, and CI
+      # clones it from GitHub — 0.4.0 shipped straight into that gap and failed
+      # with an unreadable "struct 'printer' has no member named 'Mapping'".
+      - name: Check zcompiler provides what zbundle needs
+        run: node zbundle/packages/zbundle/scripts/check-zcompiler.mjs
+
       - name: Build zignapi (CLI + module)
         working-directory: zignapi
         run: pnpm install --frozen-lockfile=false && pnpm --filter zignapi build
@@ -99,6 +106,13 @@ jobs:
           version: 11.8.0
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
+
+      # Fail EARLY and readably when the sibling zcompiler predates what this
+      # zbundle needs. A Zig `path` dependency takes what is on disk, and CI
+      # clones it from GitHub — 0.4.0 shipped straight into that gap and failed
+      # with an unreadable "struct 'printer' has no member named 'Mapping'".
+      - name: Check zcompiler provides what zbundle needs
+        run: node zbundle/packages/zbundle/scripts/check-zcompiler.mjs
 
       - name: Build zignapi
         working-directory: zignapi

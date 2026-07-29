@@ -159,7 +159,7 @@ stay in the bundle. zbundle builds libraries, not applications, for now.
 |---|---|
 | Zig tests | 93 |
 | Node tests | 146 |
-| playground (the judge) | **27/27** — the bundle says what the original says, and dead code is gone (4 projects judged through the CLI, config included) |
+| playground (the judge) | **29/29** — the bundle says what the original says, and dead code is gone (4 projects judged through the CLI, config included) |
 | graph fixtures | 12/12 |
 | real-world projects | 3/3 |
 | real world | **lodash-es: 172 modules, 131 → 81 KB, 30 ms**, identical output |

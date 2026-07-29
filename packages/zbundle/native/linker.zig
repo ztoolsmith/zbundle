@@ -86,6 +86,9 @@ pub const MapEntry = struct {
     source: u32,
     /// Offset dans ce fichier source.
     src: u32,
+    /// Un identifiant — donc quelque chose qui a pu être RENOMMÉ, et dont le nom
+    /// d'origine mérite d'être conservé.
+    name: bool = false,
 };
 
 /// De quoi fabriquer une source map v3, sans que le Zig en connaisse le format.
@@ -1044,7 +1047,7 @@ fn shortName(a: Allocator, n: u32) Error![]const u8 {
                         zc.printer.printExpressionWith(e.value.?, m.source, out, .{ .maps = &scratch }, self.a) catch
                             return self.fail("cannot print the default export of {s}", .{self.display(m.path)});
                         for (scratch.items) |mp| {
-                            try maps.append(self.a, .{ .gen = mp.out, .source = m.id, .src = mp.src });
+                            try maps.append(self.a, .{ .gen = mp.out, .source = m.id, .src = mp.src, .name = mp.name });
                         }
                     } else {
                         zc.printer.printExpression(e.value.?, m.source, out, self.a) catch
@@ -1071,7 +1074,7 @@ fn shortName(a: Allocator, n: u32) Error![]const u8 {
         zc.printer.printStatementWith(stmt, m.source, out, .{ .maps = &scratch }, self.a) catch
             return self.fail("cannot print a statement of {s}", .{self.display(m.path)});
         for (scratch.items) |mp| {
-            try maps.append(self.a, .{ .gen = mp.out, .source = m.id, .src = mp.src });
+            try maps.append(self.a, .{ .gen = mp.out, .source = m.id, .src = mp.src, .name = mp.name });
         }
     }
 

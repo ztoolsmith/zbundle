@@ -1,6 +1,6 @@
 {
   "name": "zbundle",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "A JavaScript/TypeScript bundler written in Zig, built on zcompiler — scope hoisting, tree-shaking, single file",
   "keywords": [
     "bundler",
@@ -20,11 +20,12 @@
     "scripts"
   ],
   "scripts": {
-    "build": "zignapi build && tsc",
+    "build": "node scripts/check-zcompiler.mjs && zignapi build && tsc",
     "build:zig": "zignapi build",
     "build:ts": "tsc",
     "test": "node --test",
-    "prepublishOnly": "zignapi build && tsc"
+    "prepublishOnly": "zignapi build && tsc",
+    "check:zcompiler": "node scripts/check-zcompiler.mjs"
   },
   "zignapi": {
     "binaryName": "zbundle",

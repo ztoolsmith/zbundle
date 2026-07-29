@@ -4,6 +4,57 @@ All notable changes to zbundle. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/).
 
+## [0.4.1] — 2026-07-29
+
+**Faithful renaming.** A renamed binding now hands a debugger the name that was
+actually written, not the one the bundler invented.
+
+### Added
+
+- **The `names` field.** 0.4.0 left it empty and said so; this fills it. A
+  minified bundle saying `a` now resolves to `helperWithLongName`, at the
+  declaration **and** at every reference.
+- A name is recorded exactly when the emitted identifier DIFFERS from the source
+  one. An unchanged identifier gets none: the debugger reads the source, and a
+  name would be dead weight in every build that does not minify.
+- **In zcompiler (0.4.1)**: `Mapping.name` says whether what is marked is an
+  identifier — the only thing that can be renamed, so the only thing worth
+  naming.
+
+### Details
+
+- **The "original name" is per POSITION**: the identifier as written *at that
+  source offset*. An aliased import (`import { shared as x }`) therefore carries
+  `x` on its references inside the importing file — that is what the developer
+  typed there, and what they should be shown. The exporter's own name appears on
+  the declaration, in its own file.
+- Positions were already faithful in 0.4.0 — renaming replaces a node's text,
+  never its span — and the hoisted prelude never shifted anything, because the
+  printer writes into the bundle's own buffer. Both had tests; this release adds
+  the missing half, the NAME.
+
+### Fixed
+
+- **The judge's source-map check never ran.** `SourceMapConsumer.with` returns a
+  promise, and the check read its results synchronously — so `problems` was
+  always empty and every project passed. It was inert from the moment it was
+  added in 0.4.0. Found by a negative control: sabotage an expectation, and a
+  green result is the bug. The check is now awaited, and it immediately caught
+  two wrong expectations of my own.
+- Lines the LINKER synthesizes — the hoisted `import` prelude and the final
+  `export { … }` — are excluded from the "everything maps" sweep. No character
+  of any source produced them.
+
+### Judge
+
+**29/29** (+2). `sourcemap-renamed` (one renamed identifier, three occurrences,
+each leading back to the `shared` written in its own module) and
+`sourcemap-externals` (a hoisted prelude above every module body, with the
+mapping under it verified). A new `expect-sourcemap-name` header checks EVERY
+occurrence, not just the first.
+
+100 Zig tests (+1, in zcompiler), 161 Node tests (+4).
+
 ## [0.4.0] — 2026-07-28
 
 **Source maps.** A position in the bundle points back at the exact character of

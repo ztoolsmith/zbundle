@@ -139,7 +139,7 @@ function mirrorCompile(dir) {
 
 const needsCompile = (dir) => sources(dir).some((f) => /\.(tsx|ts|jsx)$/.test(f));
 
-function checkProject(dir) {
+async function checkProject(dir) {
   const name = path.basename(dir);
   const entry = entryOf(dir);
   if (!entry) return record(name, "no main.* in the project");
@@ -214,7 +214,7 @@ function checkProject(dir) {
   if (shaking) return record(name, shaking.what, shaking.detail);
 
   // THE SOURCE MAP, decoded by the standard library and walked end to end.
-  const smap = checkSourcemap(dir, entry, code);
+  const smap = await checkSourcemap(dir, entry, code);
   if (smap) return record(name, smap.what, smap.detail);
 
   // THE IMPORTING WITNESS: exports are a CONTRACT, so they get tested as one.
@@ -260,11 +260,14 @@ function checkProject(dir) {
  * Decoded with the standard `source-map` consumer rather than our own encoder:
  * a map is only worth what a debugger makes of it.
  */
-function checkSourcemap(dir, entry, code) {
+async function checkSourcemap(dir, entry, code) {
   const head = fs.readFileSync(entry, "utf8");
   const want = head.match(/\/\/\s*expect-sourcemap:\s*(\S+)\s*->\s*(\S+)/);
   if (!want) return null;
   const [, needle, wantSource] = want;
+  // `// expect-sourcemap-name: <emitted> -> <original>` — the RENAMED case: the
+  // bundle says one thing, the map must hand a debugger the other.
+  const wantName = head.match(/\/\/\s*expect-sourcemap-name:\s*(\S+)\s*->\s*(\S+)/);
 
   const dist = path.join(dir, "dist");
   const mapName = fs.existsSync(dist) ? fs.readdirSync(dist).find((f) => f.endsWith(".map")) : null;
@@ -283,11 +286,20 @@ function checkSourcemap(dir, entry, code) {
 
   const problems = [];
   const lines = code.split("\n");
-  SourceMapConsumer.with(map, null, (c) => {
+  // **AWAITED.** `SourceMapConsumer.with` returns a promise (the library is
+  // wasm-backed and has no synchronous API). Calling it without awaiting made
+  // this whole check a no-op: `problems` was read before the callback had run,
+  // so it was always empty and every project passed. Caught by a negative
+  // control — sabotage the expectation, and a green result is the bug.
+  await SourceMapConsumer.with(map, null, (c) => {
     // Every line of real code resolves. A comment or a blank line may not.
     for (const [i, line] of lines.entries()) {
       const col = line.search(/\S/);
-      if (col < 0 || line.trimStart().startsWith("//") || line.trimStart().startsWith("import ")) continue;
+      const t = line.trimStart();
+      // Comments, the hoisted external prelude, and the final `export { … }`
+      // are all emitted BY THE LINKER, not printed from any node: no character
+      // of any source produced them, so they are legitimately unmapped.
+      if (col < 0 || t.startsWith("//") || t.startsWith("import ") || t.startsWith("export {")) continue;
       const o = c.originalPositionFor({ line: i + 1, column: col });
       if (!o.source) problems.push(`bundle L${i + 1} maps to nothing: ${JSON.stringify(line.slice(0, 40))}`);
     }
@@ -312,6 +324,28 @@ function checkSourcemap(dir, entry, code) {
     if (!srcLine.includes(needle)) {
       problems.push(`${needle} maps to ${o.source} L${o.line} — that line does not contain it: ${JSON.stringify(srcLine)}`);
     }
+
+    if (!wantName) return;
+    const [, emitted, original] = wantName;
+    if (!map.names.includes(original)) {
+      problems.push(`names does not carry ${original} (has: ${JSON.stringify(map.names)})`);
+      return;
+    }
+    // EVERY occurrence of the renamed identifier, not just the first: a
+    // declaration and its references are separate segments, and one of them
+    // losing its name would be exactly the kind of gap nobody notices.
+    let seen = 0;
+    for (const [i, line] of lines.entries()) {
+      if (line.trimStart().startsWith("//")) continue;
+      for (const m of line.matchAll(new RegExp(`\\b${emitted.replace(/\$/g, "\\$")}\\b`, "g"))) {
+        seen++;
+        const o2 = c.originalPositionFor({ line: i + 1, column: m.index });
+        if (o2.name !== original) {
+          problems.push(`${emitted} at L${i + 1}C${m.index} carries name ${JSON.stringify(o2.name)}, expected ${JSON.stringify(original)}`);
+        }
+      }
+    }
+    if (seen === 0) problems.push(`${emitted} is not in the bundle`);
   });
   return problems.length ? { what: "the SOURCE MAP is wrong", detail: problems.join("\n") } : null;
 }
@@ -505,7 +539,7 @@ const dirsIn = (root) =>
     .sort();
 
 console.log(`\n── projects: the original and the bundle must say the SAME thing ──`);
-for (const dir of dirsIn(PROJECTS)) checkProject(dir);
+for (const dir of dirsIn(PROJECTS)) await checkProject(dir);
 
 const refusalDirs = dirsIn(REFUSALS);
 if (refusalDirs.length) {

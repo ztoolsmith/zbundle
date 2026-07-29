@@ -475,7 +475,7 @@ test("live binding imported BY NAME: accepted (hoisting handles it)", () => {
 test("VERSION follows package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.4.0");
+  assert.equal(zbundle.VERSION, "0.4.1");
 });
 
 // ══════════════════ v0.3 : LE TREE-SHAKING ══════════════════
@@ -565,7 +565,7 @@ test("non-regression: the linking projects keep their behaviour", () => {
 test("VERSION matches package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.4.0");
+  assert.equal(zbundle.VERSION, "0.4.1");
 });
 
 // ══════════════════ LE CLI ══════════════════
@@ -1894,4 +1894,85 @@ test("CLI: --sourcemap overrides the config, and names an unknown mode", () => {
   const bad = build(dir, ["--sourcemap=linked"]);
   assert.equal(bad.status, 1);
   assert.match(bad.stderr, /unknown mode "linked"/);
+});
+
+// ---- names: what a debugger shows for a renamed binding (0.4.1) ----
+
+test("sourcemap: a MINIFIED name resolves to the original identifier", async () => {
+  const dir = tmpProject({
+    "dep.js": `export const helperWithLongName = (n) => n * 2;`,
+    "main.js": `import { helperWithLongName } from './dep.js';\nconsole.log(helperWithLongName(21));`,
+    "zbundle.config.ts": `export default { input: "main.js", minify: true, sourcemap: true };`,
+  });
+  assert.equal(build(dir).status, 0);
+  const code = read(dir, "dist", "main.js");
+  const map = JSON.parse(read(dir, "dist", "main.js.map"));
+  // The bundle says `a`; without `names` a debugger could only say `a` too.
+  assert.doesNotMatch(code, /helperWithLongName/);
+  assert.ok(map.names.includes("helperWithLongName"), JSON.stringify(map.names));
+
+  const lines = code.split("\n");
+  await SourceMapConsumer.with(map, null, (c) => {
+    let checked = 0;
+    for (const [i, l] of lines.entries()) {
+      if (l.trimStart().startsWith("//")) continue;
+      for (const m of l.matchAll(/\ba\b/g)) {
+        const o = c.originalPositionFor({ line: i + 1, column: m.index });
+        assert.equal(o.name, "helperWithLongName", `L${i + 1}C${m.index}`);
+        checked++;
+      }
+    }
+    // The declaration AND the call site — one of them losing its name is
+    // exactly the gap nobody notices.
+    assert.ok(checked >= 2, `only ${checked} occurrence(s) checked`);
+  });
+});
+
+test("sourcemap: an UNCHANGED identifier carries no name (nothing to say)", () => {
+  const dir = tmpProject({
+    "main.js": `const kept = 1;\nconsole.log(kept);`,
+    "zbundle.config.ts": `export default { input: "main.js", sourcemap: true };`,
+  });
+  assert.equal(build(dir).status, 0);
+  const map = JSON.parse(read(dir, "dist", "main.js.map"));
+  // Nothing was renamed, so the debugger reads the source: a `names` entry would
+  // be dead weight in every bundle that does not minify.
+  assert.deepEqual(map.names, []);
+});
+
+test("sourcemap: the name is the identifier AT THAT SOURCE POSITION", async () => {
+  const dir = tmpProject({
+    "left.js": `export const shared = () => "L";`,
+    "right.js": `export const shared = () => "R";`,
+    "main.js":
+      `import { shared as fromLeft } from './left.js';\n` +
+      `import { shared as fromRight } from './right.js';\n` +
+      `console.log(fromLeft(), fromRight());`,
+    "zbundle.config.ts": `export default { input: "main.js", sourcemap: true };`,
+  });
+  assert.equal(build(dir).status, 0);
+  const code = read(dir, "dist", "main.js");
+  const map = JSON.parse(read(dir, "dist", "main.js.map"));
+  const lines = code.split("\n");
+  await SourceMapConsumer.with(map, null, (c) => {
+    // A reference inside main.js was written as `fromLeft` there — that is what
+    // a developer reading main.js should be shown, not the exporter's name.
+    const gl = lines.findIndex((l) => l.startsWith("console.log"));
+    const o = c.originalPositionFor({ line: gl + 1, column: lines[gl].indexOf("(") + 1 });
+    assert.equal(o.source, "../main.js");
+    assert.ok(["fromLeft", "fromRight"].includes(o.name), `got ${o.name}`);
+  });
+});
+
+test("sourcemap: names survive determinism (two runs, identical maps)", () => {
+  const files = {
+    "dep.js": `export const longEnoughToBeRenamed = () => 1;`,
+    "main.js": `import { longEnoughToBeRenamed } from './dep.js';\nconsole.log(longEnoughToBeRenamed());`,
+    "zbundle.config.ts": `export default { input: "main.js", minify: true, sourcemap: true };`,
+  };
+  const a = tmpProject(files);
+  const b = tmpProject(files);
+  assert.equal(build(a).status, 0);
+  assert.equal(build(b).status, 0);
+  assert.equal(read(a, "dist", "main.js.map"), read(b, "dist", "main.js.map"));
 });
