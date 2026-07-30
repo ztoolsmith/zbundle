@@ -37,6 +37,7 @@ const std = @import("std");
 const zc = @import("zcompiler");
 const graph = @import("graph.zig");
 const resolver = @import("resolver.zig");
+const codeframe = @import("codeframe.zig");
 const shake = @import("shake.zig");
 
 const Allocator = std.mem.Allocator;
@@ -205,6 +206,36 @@ const Linker = struct {
         return error.BundleFailed;
     }
 
+    /// `fail`, followed by a codeframe pointing at `offset` in module `mod`.
+    ///
+    /// A refusal already says WHAT it will not do; this is what makes it say
+    /// where. Presentation only — the refusal itself is unchanged.
+    fn failAt(self: *Linker, mod: ModuleId, offset: u32, comptime fmt: []const u8, args: anytype) Error {
+        const body = std.fmt.allocPrint(self.a, fmt, args) catch return self.fail(fmt, args);
+        const frame = codeframe.render(
+            self.a,
+            self.display(self.mods[mod].path),
+            self.mods[mod].source,
+            offset,
+        ) catch return self.fail(fmt, args);
+        self.err.message = std.fmt.allocPrint(self.a, "{s}\n  {s}", .{ body, frame }) catch body;
+        return error.BundleFailed;
+    }
+
+    /// The source offset of the module record for `specifier` in `mod`.
+    ///
+    /// Re-read from the AST rather than carried on the graph edge: `Edge` is part
+    /// of the JS-facing shape and of the corpus contract, and widening it for a
+    /// message would be a poor trade. Re-deriving costs one pass over a list that
+    /// is already in memory.
+    fn recordOffset(self: *Linker, mod: ModuleId, specifier: []const u8) ?u32 {
+        const m = &self.mods[mod];
+        for (zc.moduleRecords(self.a, m.program, m.source)) |rec| {
+            if (std.mem.eql(u8, rec.specifier, specifier)) return rec.start;
+        }
+        return null;
+    }
+
     /// The target module of a specifier from `from`, or null when external.
     fn targetOf(self: *Linker, from: ModuleId, specifier: []const u8) ?ModuleId {
         for (self.g.edges) |e| {
@@ -314,6 +345,16 @@ const Linker = struct {
         for (self.g.edges) |e| {
             if (!e.is_dynamic) continue;
             const to = e.to orelse continue; // dynamic toward an external: fine, re-emitted as is
+            if (self.recordOffset(e.from, e.specifier)) |at| return self.failAt(
+                e.from,
+                at,
+                "dynamic import() of an internal module is not supported: '{s}'\n" ++
+                    "  ({s} -> {s})\n" ++
+                    "  An internal dynamic import needs a separate CHUNK: that is\n" ++
+                    "  code-splitting, planned for later. Make the import static, or mark the\n" ++
+                    "  target as external.",
+                .{ e.specifier, self.display(self.mods[e.from].path), self.display(self.mods[to].path) },
+            );
             return self.fail(
                 "dynamic import() of an internal module is not supported: '{s}'\n" ++
                     "  ({s} -> {s})\n" ++
@@ -341,7 +382,11 @@ const Linker = struct {
             if (m.namespace_name == null) continue;
             var seen: std.StringHashMapUnmanaged(void) = .empty;
             if (try self.findAssigned(m.id, &seen, 0)) |b| {
-                return self.fail(
+                // `b` is the reassigned binding, and a binding knows where it was
+                // declared: the refusal can point at the `export let` itself.
+                return self.failAt(
+                    m.id,
+                    b.decl_start,
                     "live binding exposed through a namespace object: `{s}` in {s}\n" ++
                         "  `{s}` is REASSIGNED after initialization, and its module is imported\n" ++
                         "  with `import * as ns` (or re-exported as `export * as ns`). The\n" ++

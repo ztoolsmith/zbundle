@@ -285,7 +285,7 @@ in the bundle. zbundle builds libraries, not applications, for now.
 
 | | |
 |---|---|
-| Zig tests | 93 |
+| Zig tests | 106 |
 | Node tests | 146 |
 | the judge (the bundle runs and says what the original says) | **31/31** |
 | graph fixtures | 12/12 |

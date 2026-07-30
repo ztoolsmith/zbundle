@@ -50,7 +50,7 @@ pub fn build(b: *std.Build) void {
     // the `zcompiler` module (graph.zig parses through it); resolver.zig is
     // standalone but follows the same path.
     const test_step = b.step("test", "Run the Zig tests (resolver + graph + shake + linker)");
-    for ([_][]const u8{ "native/resolver.zig", "native/graph.zig", "native/shake.zig", "native/linker.zig" }) |root| {
+    for ([_][]const u8{ "native/codeframe.zig", "native/resolver.zig", "native/graph.zig", "native/shake.zig", "native/linker.zig" }) |root| {
         const tests_mod = b.createModule(.{
             .root_source_file = b.path(root),
             .target = target,

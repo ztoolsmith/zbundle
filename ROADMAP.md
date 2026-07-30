@@ -27,6 +27,7 @@ What is delivered, what is refused, and when the refusal is expected to lift.
 | **0.4.1** | **faithful renaming** — the `names` field: a renamed binding resolves to what was written |
 | **0.4.2** | **paths** — `sources` relative to the map, POSIX always, `sourceRoot`, `sourcesContent` |
 | **0.4.3** | **minify + source maps** — every emitted line has a position, including what the linker synthesizes |
+| **0.4.4** | **codeframes** — errors show the line and point at the column |
 
 ## Refused, with a date
 

@@ -10,6 +10,7 @@
 const std = @import("std");
 const zc = @import("zcompiler");
 const resolver = @import("resolver.zig");
+const codeframe = @import("codeframe.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -203,11 +204,31 @@ const Builder = struct {
     /// Resolves `specifier` from `from_dir` and returns the module id (creating
     /// it if new). `error.BuildFailed` if a relative specifier does not resolve.
     fn resolveAndIntern(self: *Builder, from_dir: []const u8, specifier: []const u8, importer: []const u8) Error!ModuleId {
+        return self.resolveAt(from_dir, specifier, importer, null);
+    }
+
+    /// Same, with the offset of the import that asked — so the failure can point
+    /// at the line instead of merely naming the file.
+    fn resolveAt(
+        self: *Builder,
+        from_dir: []const u8,
+        specifier: []const u8,
+        importer: []const u8,
+        at: ?struct { source: []const u8, offset: u32 },
+    ) Error!ModuleId {
         var diag: resolver.Diagnostic = .{};
         const r = resolver.resolve(self.a, self.io, from_dir, specifier, self.opts.resolve, &diag) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             error.NotFound => {
-                self.err.message = try resolver.formatError(self.a, diag, importer);
+                const base = try resolver.formatError(self.a, diag, "");
+                self.err.message = if (at) |pos| try std.fmt.allocPrint(
+                    self.a,
+                    "{s}\n  {s}",
+                    .{ base, try codeframe.render(self.a, importer, pos.source, pos.offset) },
+                ) else if (importer.len > 0)
+                    try std.fmt.allocPrint(self.a, "{s} from {s}", .{ base, importer })
+                else
+                    base;
                 return error.BuildFailed;
             },
         };
@@ -294,7 +315,13 @@ const Builder = struct {
         if (resolver.isExternal(self.opts.resolve, dir, rec.specifier)) {
             edge.external = try self.internExternal(rec.specifier);
         } else {
-            edge.to = try self.resolveAndIntern(dir, rec.specifier, importer);
+            // `rec.start` is the import statement: the codeframe points at the
+            // line that asked, which is the whole difference between "somewhere
+            // in this file" and "here".
+            edge.to = try self.resolveAt(dir, rec.specifier, importer, .{
+                .source = self.parsed.items[from].source,
+                .offset = rec.start,
+            });
         }
         try self.edges.append(self.a, edge);
     }

@@ -155,7 +155,7 @@ test("graph: './missing' -> error with the importer and the attempted paths", ()
       () => zbundle.graph(entry),
       (err) => {
         assert.match(err.message, /cannot resolve '\.\/missing'/);
-        assert.match(err.message, /from .*broken-entry\.js/); // the importer
+        assert.match(err.message, /broken-entry\.js:\d+:\d+/); // the importer
         assert.match(err.message, /tried:/);
         assert.match(err.message, /missing\.ts/);
         return true;
@@ -475,7 +475,7 @@ test("live binding imported BY NAME: accepted (hoisting handles it)", () => {
 test("VERSION follows package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.4.3");
+  assert.equal(zbundle.VERSION, "0.4.4");
 });
 
 // ══════════════════ v0.3 : LE TREE-SHAKING ══════════════════
@@ -565,7 +565,7 @@ test("non-regression: the linking projects keep their behaviour", () => {
 test("VERSION matches package.json", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.equal(zbundle.VERSION, pkg.version);
-  assert.equal(zbundle.VERSION, "0.4.3");
+  assert.equal(zbundle.VERSION, "0.4.4");
 });
 
 // ══════════════════ LE CLI ══════════════════
@@ -2220,4 +2220,129 @@ test("sourcemap+minify: minify alone still costs no map, and the map costs no re
   // The two options are orthogonal: asking for a map must not change one byte of
   // the code, and `hidden` adds no comment either.
   assert.equal(read(minOnly, "dist", "main.js"), read(both, "dist", "main.js"));
+});
+
+// ══════════════════ CODEFRAMES (0.4.4) ══════════════════
+// An error that says WHAT is half the job; these check it says WHERE.
+
+/** The `file:line:column` a message announces, if it has one. */
+function framePosition(message) {
+  const m = message.match(/([^\s:]+):(\d+):(\d+)\n/);
+  return m ? { file: m[1], line: Number(m[2]), column: Number(m[3]) } : null;
+}
+
+test("codeframe: a resolution failure points at the import that asked", () => {
+  const dir = tmpProject({
+    "src/real.ts": `export const ok = 1;`,
+    "src/main.ts":
+      `import { ok } from './real.ts';\n` +
+      `import { gone } from './missing.ts';\n` +
+      `console.log(ok, gone);`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  const pos = framePosition(r.stderr);
+  assert.ok(pos, r.stderr);
+  assert.equal(pos.line, 2); // the SECOND import, not the file's first line
+  // The frame shows that line, and the caret sits under the specifier.
+  assert.match(r.stderr, /│ import \{ gone \} from '\.\/missing\.ts';/);
+  assert.match(r.stderr, /\^/);
+  const caretLine = r.stderr.split("\n").find((l) => l.includes("^"));
+  assert.equal(caretLine.indexOf("^"), caretLine.indexOf("│") + 2 + (pos.column - 1));
+});
+
+test("codeframe: the column counts UTF-16 units, not bytes", () => {
+  const dir = tmpProject({
+    // `café` before the failing specifier: counting bytes would push the caret
+    // one place right of where an editor puts the cursor.
+    "src/main.ts": `const café = 1;\nimport { x } from './nope.ts';\nconsole.log(café, x);`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  const pos = framePosition(r.stderr);
+  assert.ok(pos, r.stderr);
+  const line = `import { x } from './nope.ts';`;
+  assert.equal(pos.column, line.indexOf("'./nope.ts'") + 1);
+});
+
+test("codeframe: an internal dynamic import points at the import() call", () => {
+  const dir = tmpProject({
+    "lazy.ts": `export const v = 1;`,
+    "main.ts": `console.log('before');\n\nconst m = await import('./lazy.ts');\nconsole.log(m);`,
+    "zbundle.config.ts": `export default { input: "main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  // Two refusals could fire here; whichever does must still point somewhere.
+  if (/dynamic import\(\)/.test(r.stderr)) {
+    const pos = framePosition(r.stderr);
+    assert.ok(pos, r.stderr);
+    assert.equal(pos.line, 3);
+    assert.match(r.stderr, /│ const m = await import\('\.\/lazy\.ts'\);/);
+  } else {
+    assert.match(r.stderr, /top-level await/);
+  }
+});
+
+test("codeframe: a namespace live binding points at the `export let`", () => {
+  const dir = tmpProject({
+    "counter.ts": `export let count = 0;\nexport const bump = () => { count++; };`,
+    "main.ts": `import * as ns from './counter.ts';\nns.bump();\nconsole.log(ns.count);`,
+    "zbundle.config.ts": `export default { input: "main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /live binding exposed through a namespace object/);
+  const pos = framePosition(r.stderr);
+  assert.ok(pos, r.stderr);
+  assert.equal(pos.line, 1);
+  assert.match(r.stderr, /│ export let count = 0;/);
+});
+
+test("codeframe: a malformed tsconfig points at the character that broke it", () => {
+  const dir = tmpProject({
+    "src/main.ts": `console.log(1);`,
+    "tsconfig.json": `{\n  "compilerOptions": {\n    "paths": { "@/*": ["./src/*"] }\n}\n`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  const pos = framePosition(r.stderr);
+  assert.ok(pos, r.stderr);
+  assert.match(pos.file, /tsconfig\.json$/);
+  // The frame is rendered on the TS side for the build's OWN files — the Zig
+  // side never sees them — but it comes out in the same shape.
+  assert.match(r.stderr, /\^/);
+  assert.match(r.stderr, /still JSON/);
+});
+
+test("codeframe: the two refusals with no position say so by not pretending", () => {
+  // zcompiler reports top-level await and `import.meta` as BOOLEANS, with no
+  // offset. Inventing one would point at a character that means nothing, so
+  // these two carry the file and no frame — and that stays true until the
+  // compiler exposes a position.
+  const tla = tmpProject({
+    "main.ts": `const v = await Promise.resolve(1);\nconsole.log(v);`,
+    "zbundle.config.ts": `export default { input: "main.ts" };`,
+  });
+  const r = build(tla);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /top-level await is not supported \(main\.ts\)/);
+  assert.doesNotMatch(r.stderr, /\^/);
+});
+
+test("codeframe: a tab in the offending line does not move the caret", () => {
+  const dir = tmpProject({
+    "src/main.ts": `\timport { x } from './nope.ts';`,
+    "zbundle.config.ts": `export default { input: "src/main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  // A tab is rendered as ONE space: keeping it would put the caret wherever the
+  // terminal's tab width decides, which is nowhere reliable.
+  const frameLine = r.stderr.split("\n").find((l) => l.includes("import { x }"));
+  assert.ok(frameLine, r.stderr);
+  assert.doesNotMatch(frameLine, /\t/);
 });

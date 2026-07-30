@@ -157,7 +157,7 @@ stay in the bundle. zbundle builds libraries, not applications, for now.
 
 | | |
 |---|---|
-| Zig tests | 93 |
+| Zig tests | 106 |
 | Node tests | 146 |
 | playground (the judge) | **31/31** — the bundle says what the original says, and dead code is gone (4 projects judged through the CLI, config included) |
 | graph fixtures | 12/12 |

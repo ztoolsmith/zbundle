@@ -523,6 +523,26 @@ function diff(expected, actual) {
 
 // ---- refusals: the error IS the expected behaviour ----
 
+/**
+ * `// expect-codeframe: <text>` in a refusal's `main.*`: the message must not
+ * only explain, it must POINT — `file:line:column`, the offending line, and a
+ * caret under it. `<text>` is what that line has to contain.
+ *
+ * Two refusals cannot have one: top-level await and `import.meta` are reported
+ * by zcompiler as booleans, with no offset to point at. Those projects simply do
+ * not carry the header.
+ */
+function checkCodeframe(head, message) {
+  const want = head.match(/\/\/\s*expect-codeframe:\s*(.+)/);
+  if (!want) return null;
+  const needle = want[1].trim();
+  if (!/:\d+:\d+/.test(message)) return "no file:line:column in the message";
+  if (!message.includes("^")) return "no caret in the message";
+  const frameLine = message.split("\n").find((l) => l.includes("│") && l.includes(needle));
+  if (!frameLine) return `the frame does not show ${JSON.stringify(needle)}`;
+  return null;
+}
+
 function checkRefusal(dir) {
   const name = path.basename(dir);
   const entry = entryOf(dir);
@@ -542,6 +562,9 @@ function checkRefusal(dir) {
   if (message.split("\n").length < 2) {
     return record(name, "refusal without explanation", message);
   }
+  // …and, where a position exists, POINT.
+  const frame = checkCodeframe(fs.readFileSync(entry, "utf8"), message);
+  if (frame) return record(name, "the refusal has no usable codeframe", `${frame}\n${message}`);
   pass++;
   console.log(`  ${GREEN}✔${OFF} ${name.padEnd(15)} ${DIM}refused: ${message.split("\n")[0]}${OFF}`);
 }

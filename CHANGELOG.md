@@ -4,6 +4,77 @@ All notable changes to zbundle. Format inspired by
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/).
 
+## [0.4.4] — 2026-07-29
+
+**Codeframes.** An error that says what went wrong now also says where.
+
+```
+✘ cannot resolve './accentué.ts'
+    tried:
+      /project/src/accentué.ts
+    src/main.ts:2:22
+    2 │ import { café } from './accentué.ts';
+      │                      ^
+```
+
+**This is presentation, not a refusal being lifted.** The same builds fail for the
+same reasons; they just stop making you find the line yourself. Almost free by
+now: the byte-exact spans have been on every node since day one, and 0.4.0 built
+the machinery that turns a byte offset into a line and a column.
+
+### Added
+
+- **`native/codeframe.zig`** — `file:line:column`, the offending line, a caret
+  under the column. Columns count **UTF-16 code units**, so the caret lands where
+  an editor puts its cursor even on a line holding an accent or an emoji. A tab is
+  rendered as one space: keeping it would place the caret wherever the terminal's
+  tab width decides.
+- **`src/codeframe.ts`** — the same shape for the build's OWN files, which never
+  reach the addon: a malformed `tsconfig.json` now shows the character that broke
+  it. Symmetry rather than sharing — copying a whole source across the N-API
+  boundary to have a caret drawn there would be a lot of work to avoid twenty
+  lines.
+
+### Which errors point, and which cannot
+
+| error | points at |
+|---|---|
+| resolution failure | the **import that asked** — not merely the file |
+| internal `import()` | the `import(…)` call |
+| live binding via a namespace | the `export let` that gets reassigned |
+| malformed `tsconfig.json` | the offending character |
+| top-level await, `import.meta` | **the file only** |
+
+The last two are honest about it: zcompiler reports them as **booleans**, with no
+offset. Inventing one would point at a character that means nothing, so they
+carry the file and no frame — and that stays true until the compiler exposes a
+position. Adding the header that demands a frame to one of those projects makes
+the judge fail, which is how it is kept honest.
+
+Config *value* errors (`sourcemap: "linked"`) have no frame either, and cannot:
+the config was evaluated by Node, so there is no offset for a key.
+
+### Details
+
+- The dynamic-import refusal re-derives its offset from the module records rather
+  than carrying it on the graph edge. `Edge` is part of the JS-facing shape and of
+  the corpus contract; widening it for a message would be a poor trade.
+- `codeframe.render` frees its intermediate buffers. Production passes it the call
+  arena, which would swallow them — but depending on the caller's allocator being
+  an arena is a promise the file cannot check, and the leak showed up under the
+  test allocator.
+
+### Judge
+
+**31/31**, with a new `expect-codeframe` header on the two refusals that can
+point. Negative-controlled twice: a wrong expectation fails, and demanding a frame
+from a refusal that has no position fails too.
+
+180 Node tests (+8), 106 Zig tests (+6), 12/12 fixtures, 3/3 real-world projects.
+One pre-existing assertion was updated rather than the code reverted: it required
+`from <importer>`, which the codeframe now states more precisely as
+`<importer>:line:column`.
+
 ## [0.4.3] — 2026-07-29
 
 **Minify and source maps together.** Everything the bundle emits now has a

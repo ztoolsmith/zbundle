@@ -22,6 +22,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve as resolvePath, sep } from "node:path";
 
 import { parseJsonc, JsoncError } from "./jsonc.js";
+import { codeframe } from "./codeframe.js";
 import { ConfigError } from "./load.js";
 
 /** One alias as `resolver.zig` wants it: absolute target, scoped, exact or prefix. */
@@ -107,8 +108,12 @@ function readChain(file: string, seen: string[] = []): Options {
     raw = parseJsonc(readFileSync(abs, "utf8"), shortish(abs));
   } catch (err) {
     if (err instanceof JsoncError) {
+      // The message already carries file:line:column; the frame shows the line.
+      const text = readFileSync(abs, "utf8");
+      const detail = err.message.replace(/^\S+?:\d+:\d+: /, "");
       throw new ConfigError(
-        `tsconfig: ${err.message}\n  A tsconfig may hold comments and trailing commas, but it is still JSON.`,
+        `tsconfig: ${detail}\n  ${codeframe(shortish(abs), text, err.line, err.column)}\n` +
+          `  A tsconfig may hold comments and trailing commas, but it is still JSON.`,
       );
     }
     throw err;
