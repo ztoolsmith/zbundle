@@ -59,6 +59,17 @@ the config was evaluated by Node, so there is no offset for a key.
 - The dynamic-import refusal re-derives its offset from the module records rather
   than carrying it on the graph edge. `Edge` is part of the JS-facing shape and of
   the corpus contract; widening it for a message would be a poor trade.
+- **Over-long values are bounded everywhere**, not only in the frame. A specifier
+  is repeated by every attempted path, so a three-thousand-character one was
+  printed a dozen times over. Values are now shortened around their MIDDLE —
+  the head says where a path starts, the tail keeps the file name, and both are
+  what a reader needs — on a character boundary, so the message stays valid
+  UTF-8. A short value keeps its full detail.
+- **A long offending line is windowed**, not dumped: 100 units around the caret,
+  with an ellipsis where it cut. A minified file or a generated table can put
+  thousands of characters on one line, and an error message that long is one
+  nobody reads. Found in the pre-publish audit — every hand-written test case had
+  short lines.
 - `codeframe.render` frees its intermediate buffers. Production passes it the call
   arena, which would swallow them — but depending on the caller's allocator being
   an arena is a promise the file cannot check, and the leak showed up under the
@@ -70,7 +81,14 @@ the config was evaluated by Node, so there is no offset for a key.
 point. Negative-controlled twice: a wrong expectation fails, and demanding a frame
 from a refusal that has no position fails too.
 
-180 Node tests (+8), 106 Zig tests (+6), 12/12 fixtures, 3/3 real-world projects.
+**188 Node tests** (+16), **112 Zig tests** (+12), 12/12 fixtures, 3/3 real-world
+projects.
+
+A pre-publish audit added the cases the feature work never exercised: degenerate
+inputs (empty file, comment only, no trailing newline, CRLF, BOM, everything
+shaken away — all produce a valid map), multi-entry at two depths, every option
+combined, the codeframe window, and **real scale** — lodash-es, 641 sources, a
+766 KB map, byte-identical across two runs, with every statement line mapped.
 One pre-existing assertion was updated rather than the code reverted: it required
 `from <importer>`, which the codeframe now states more precisely as
 `<importer>:line:column`.

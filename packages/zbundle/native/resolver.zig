@@ -8,8 +8,10 @@
 //! conditions, `main`/`module`, self-references, hoisting...) is a project of
 //! its own, planned for later.
 //!
-//! Depends on NOTHING but the stdlib: no zcompiler here (resolving a path is not
-//! compiling), no zignapi (no notion of JS).
+//! Depends on the stdlib and on `codeframe.zig` — itself stdlib-only, and used
+//! for PRESENTATION alone (shortening an over-long value in a message). No
+//! zcompiler here (resolving a path is not compiling), no zignapi (no notion of
+//! JS): the invariant that matters is untouched.
 //!
 //! **Disk access goes through `io: std.Io`** (Zig 0.16's I/O interface), never
 //! through a hard-coded syscall. Direct consequence: porting zbundle onto a
@@ -17,6 +19,7 @@
 //! supplying a different `Io`, without touching a single line of the resolver.
 
 const std = @import("std");
+const codeframe = @import("codeframe.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -273,12 +276,20 @@ pub fn readFile(a: Allocator, io: Io, path: []const u8, max_bytes: usize) ![]u8 
 /// The full error message: the specifier, the importer, and ALL attempted paths
 /// in order. `importer` may be empty (standalone resolution).
 pub fn formatError(a: Allocator, diag: Diagnostic, importer: []const u8) Allocator.Error![]const u8 {
+    const short = struct {
+        fn f(alloc: Allocator, text: []const u8) Allocator.Error![]const u8 {
+            return codeframe.ellipsize(alloc, text, codeframe.VALUE_LIMIT);
+        }
+    }.f;
+
     var out: std.ArrayList(u8) = .empty;
-    try out.appendSlice(a, try std.fmt.allocPrint(a, "cannot resolve '{s}'", .{diag.specifier}));
-    if (importer.len > 0) try out.appendSlice(a, try std.fmt.allocPrint(a, " from {s}", .{importer}));
+    // Every value is bounded: the specifier appears once and each attempted path
+    // repeats it, so an over-long one would be printed a dozen times over.
+    try out.appendSlice(a, try std.fmt.allocPrint(a, "cannot resolve '{s}'", .{try short(a, diag.specifier)}));
+    if (importer.len > 0) try out.appendSlice(a, try std.fmt.allocPrint(a, " from {s}", .{try short(a, importer)}));
     if (diag.tried.len > 0) {
         try out.appendSlice(a, "\n  tried:");
-        for (diag.tried) |t| try out.appendSlice(a, try std.fmt.allocPrint(a, "\n    {s}", .{t}));
+        for (diag.tried) |t| try out.appendSlice(a, try std.fmt.allocPrint(a, "\n    {s}", .{try short(a, t)}));
     }
     return out.items;
 }

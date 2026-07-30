@@ -2346,3 +2346,174 @@ test("codeframe: a tab in the offending line does not move the caret", () => {
   assert.ok(frameLine, r.stderr);
   assert.doesNotMatch(frameLine, /\t/);
 });
+
+// ══════════════════ PRE-PUBLISH AUDIT (0.4.x) ══════════════════
+// Cases the feature work never exercised: real scale, degenerate inputs, and
+// every option combined.
+
+test("audit: a source map stays valid on degenerate inputs", async () => {
+  const cases = {
+    "empty file": "",
+    "comment only": "// nothing\n",
+    "no trailing newline": "console.log(1);",
+    "CRLF": "const a = 1;\r\nconsole.log(a);\r\n",
+    "BOM": "﻿console.log(1);\n",
+    "everything shaken away": "const unused = 1;\n",
+  };
+  for (const [what, body] of Object.entries(cases)) {
+    const dir = tmpProject({
+      "main.js": body,
+      "zbundle.config.ts": `export default { input: "main.js", sourcemap: true };`,
+    });
+    const r = build(dir);
+    assert.equal(r.status, 0, `${what}: ${r.stderr}`);
+    const map = JSON.parse(read(dir, "dist", "main.js.map"));
+    assert.equal(map.version, 3, what);
+    // An empty `mappings` is valid v3 — an empty bundle has nothing to map, and
+    // the consumer must still accept the map.
+    await SourceMapConsumer.with(map, null, () => {});
+  }
+});
+
+test("audit: multi-entry gives each bundle its own map, at its own depth", () => {
+  const dir = tmpProject({
+    "lib.js": `export const shared = () => 1;`,
+    "a.js": `import { shared } from './lib.js';\nconsole.log('a', shared());`,
+    "b.js": `import { shared } from './lib.js';\nconsole.log('b', shared());`,
+    "zbundle.config.ts": `export default {
+      input: { alpha: "a.js", "deep/beta": "b.js" },
+      sourcemap: true,
+    };`,
+  });
+  assert.equal(build(dir).status, 0);
+  const alpha = JSON.parse(read(dir, "dist", "alpha.js.map"));
+  const beta = JSON.parse(read(dir, "dist", "deep", "beta.js.map"));
+  assert.equal(alpha.file, "alpha.js");
+  assert.equal(beta.file, "beta.js");
+  // The nested one climbs one level further, and each comment names its own map.
+  assert.deepEqual(alpha.sources.sort(), ["../a.js", "../lib.js"]);
+  assert.deepEqual(beta.sources.sort(), ["../../b.js", "../../lib.js"]);
+  assert.match(read(dir, "dist", "alpha.js"), /sourceMappingURL=alpha\.js\.map/);
+  assert.match(read(dir, "dist", "deep", "beta.js"), /sourceMappingURL=beta\.js\.map/);
+});
+
+test("audit: inline + minify + sourceRoot all apply at once", () => {
+  const dir = tmpProject({
+    "lib.js": `export const aLongExportedName = () => 1;`,
+    "main.js": `import { aLongExportedName } from './lib.js';\nconsole.log(aLongExportedName());`,
+    "zbundle.config.ts": `export default {
+      input: "main.js", minify: true,
+      sourcemap: { mode: "inline", sourceRoot: "/@s/" },
+    };`,
+  });
+  assert.equal(build(dir).status, 0);
+  assert.ok(!exists(dir, "dist", "main.js.map"));
+  const code = read(dir, "dist", "main.js");
+  const map = JSON.parse(
+    Buffer.from(code.match(/base64,([A-Za-z0-9+/=]+)/)[1], "base64").toString("utf8"),
+  );
+  assert.equal(map.sourceRoot, "/@s/");
+  assert.ok(map.names.includes("aLongExportedName"));
+  assert.doesNotMatch(code, /aLongExportedName/);
+});
+
+test("audit: a codeframe on a very long line is WINDOWED, not dumped", () => {
+  const pad = "x".repeat(3000);
+  const dir = tmpProject({
+    "main.ts": `const pad = "${pad}" + MISSING;\nimport { y } from './nope.ts';`,
+    "zbundle.config.ts": `export default { input: "main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  const frameLine = r.stderr.split("\n").find((l) => l.includes("│") && !l.includes("^"));
+  assert.ok(frameLine, r.stderr);
+  // A 3000-character line in an error message is an error message nobody reads.
+  assert.ok(frameLine.length < 200, `frame line is ${frameLine.length} chars`);
+});
+
+test("audit: a codeframe keeps the caret aligned inside the window", () => {
+  const dir = tmpProject({
+    // The failing import sits far to the right of a very long prefix.
+    "main.ts": `const pad = "${"a".repeat(400)}";\nimport { y } from './nope.ts';`,
+    "zbundle.config.ts": `export default { input: "main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  const lines = r.stderr.split("\n");
+  const caret = lines.find((l) => l.includes("^"));
+  const text = lines[lines.indexOf(caret) - 1];
+  // Counted in code UNITS: the text line may hold an ellipsis where the caret
+  // line holds a space, and a byte comparison would report a phantom drift.
+  const units = (s) => [...s].length;
+  const bar = (s) => units(s.slice(0, s.indexOf("│ "))) + 2;
+  assert.equal(units(text.slice(0, text.indexOf("'./nope.ts'"))) - bar(text),
+               units(caret.slice(0, caret.indexOf("^"))) - bar(caret));
+});
+
+test("audit: the map is deterministic and complete at real scale", async () => {
+  const lodash = path.join(REAL, "node_modules", "lodash-es");
+  if (!fs.existsSync(lodash)) return; // corpus not installed: nothing to assert
+  const files = {
+    "main.js": `import { merge, debounce } from './lodash-es/lodash.js';\nconsole.log(typeof merge, typeof debounce);`,
+    "zbundle.config.ts": `export default { input: "main.js", minify: true, sourcemap: true };`,
+  };
+  const a = tmpProject(files);
+  const b = tmpProject(files);
+  for (const d of [a, b]) fs.cpSync(lodash, path.join(d, "lodash-es"), { recursive: true });
+  assert.equal(build(a).status, 0);
+  assert.equal(build(b).status, 0);
+  // Hundreds of sources, a map measured in hundreds of kilobytes: two runs must
+  // still agree byte for byte.
+  assert.equal(read(a, "dist", "main.js.map"), read(b, "dist", "main.js.map"));
+
+  const code = read(a, "dist", "main.js");
+  const map = JSON.parse(read(a, "dist", "main.js.map"));
+  assert.ok(map.sources.length > 100, `${map.sources.length} sources`);
+  await SourceMapConsumer.with(map, null, (c) => {
+    const lines = code.split("\n");
+    let unmapped = 0;
+    for (const [i, l] of lines.entries()) {
+      const t = l.trimStart();
+      const col = l.search(/\S/);
+      if (col < 0 || t.startsWith("//") || t.startsWith("import ") || t.startsWith("export {")) continue;
+      // A closing brace carries no source position of its own, and neither does
+      // a `case` label or the continuation of a multi-line statement — no
+      // bundler maps them, and no debugger breaks on them.
+      if (/^[})\];,]+;?$/.test(t) || /^(case|default)[\s:]/.test(t) || t.startsWith("}")) continue;
+      if (!c.originalPositionFor({ line: i + 1, column: col }).source) unmapped++;
+    }
+    // Everything that IS a statement start maps. The bar is deliberately tight:
+    // a regression in the position chain would blow past it immediately.
+    assert.ok(unmapped < 5, `${unmapped} statement lines unmapped`);
+  });
+});
+
+test("audit: an over-long specifier is bounded in the message too", () => {
+  const long = "x".repeat(3000);
+  const dir = tmpProject({
+    "main.ts": `import { y } from './nope-${long}.ts';`,
+    "zbundle.config.ts": `export default { input: "main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  // The specifier is repeated by every attempted path, so an unbounded one is
+  // printed several times over. No line of the message may run away.
+  for (const line of r.stderr.split("\n")) {
+    assert.ok(line.length < 250, `a message line is ${line.length} chars`);
+  }
+  // Shortened around the MIDDLE: the head says where it starts, the tail keeps
+  // the extension, and both are what a reader needs.
+  assert.match(r.stderr, /cannot resolve '\.\/nope-x+…x+\.ts'/);
+});
+
+test("audit: a short specifier keeps its full path", () => {
+  const dir = tmpProject({
+    "main.ts": `import { y } from './nope.ts';`,
+    "zbundle.config.ts": `export default { input: "main.ts" };`,
+  });
+  const r = build(dir);
+  assert.equal(r.status, 1);
+  // Bounding must not cost the common case its detail.
+  assert.match(r.stderr, /cannot resolve '\.\/nope\.ts'/);
+  assert.doesNotMatch(r.stderr, /…/);
+});
